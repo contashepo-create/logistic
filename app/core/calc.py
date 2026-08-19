@@ -155,18 +155,30 @@ def invoice_totals(conn, invoice_id: int) -> dict:
     }
 
 
-def trip_profit(conn, trip_id: int) -> dict:
-    """ربح النقلة = سعرها − مصروفاتها المباشرة − سندات الدفع اللاحقة عليها."""
+def trip_profit(conn, trip_id: int, p_from: str | None = None,
+                p_to: str | None = None) -> dict:
+    """ربح النقلة = سعرها − مصروفاتها المباشرة − سندات الدفع اللاحقة عليها.
+
+    p_from/p_to: عند تحديدهما تُحتسب السندات اللاحقة داخل الفترة فقط
+    (اتساقاً مع تقرير الأرباح والخسائر عن نفس الفترة).
+    """
     price = _scalar(conn, "SELECT price FROM invoice_trips WHERE id=?", (trip_id,))
     direct = _scalar(
         conn, "SELECT COALESCE(SUM(amount),0) FROM trip_expenses WHERE trip_id=?",
         (trip_id,),
     )
+    cond, params = "", [trip_id]
+    if p_from:
+        cond += " AND date >= ?"
+        params.append(p_from)
+    if p_to:
+        cond += " AND date <= ?"
+        params.append(p_to)
     later = _scalar(
         conn,
-        "SELECT COALESCE(SUM(amount),0) FROM payment_vouchers "
-        "WHERE voucher_type='trip' AND trip_id=?",
-        (trip_id,),
+        f"SELECT COALESCE(SUM(amount),0) FROM payment_vouchers "
+        f"WHERE voucher_type='trip' AND trip_id=?{cond}",
+        params,
     )
     return {"price": price, "direct": direct, "later": later, "net": price - direct - later}
 
@@ -208,6 +220,11 @@ def get_invoice_full(conn, invoice_id: int) -> dict:
         return {}
     d = dict(inv)
     d["customer"] = dict(_q(conn, "SELECT * FROM customers WHERE id=?", (d["customer_id"],)))
+    try:
+        _att = json.loads(d.get("attachments") or "[]")
+        d["attachments"] = _att if isinstance(_att, list) else []
+    except (ValueError, TypeError):
+        d["attachments"] = []
     d["trips"] = []
     for t in _rows(
         conn,
@@ -368,7 +385,7 @@ def trip_profits_report(conn, d_from=None, d_to=None, customer_id=None) -> list[
     sql += " ORDER BY i.date, i.number, t.id"
     out = []
     for r in _rows(conn, sql, params):
-        p = trip_profit(conn, r["id"])
+        p = trip_profit(conn, r["id"], d_from, d_to)
         out.append({
             "trip_id": r["id"],
             "invoice": invoice_number_label(r["inv_number"]),

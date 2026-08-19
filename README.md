@@ -86,7 +86,11 @@ python scripts/test_full.py
 #    مع التحقق من صحة ملفات Excel/PDF الناتجة فعلياً
 QT_QPA_PLATFORM=offscreen python scripts/test_ui_deep.py
 
-# 4) لقطات شاشة لكل الشاشات + تصدير فعلي
+# 4) تدقيق جديد بأساليب مختلفة (سجل ظل + ميزان مراجعة + مصفوفة سنوات + أمن أعمق)
+python scripts/test_audit.py        # 74+ فحصاً
+QT_QPA_PLATFORM=offscreen python scripts/test_ui_audit.py   # 42+ فحصاً
+
+# 5) لقطات شاشة لكل الشاشات + تصدير فعلي
 QT_QPA_PLATFORM=offscreen python scripts/run_gui_check.py
 ```
 

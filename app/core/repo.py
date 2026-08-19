@@ -59,6 +59,25 @@ def _count(conn, sql: str, params=()) -> int:
     return int(conn.execute(sql, params).fetchone()[0])
 
 
+def _m(x) -> float:
+    """تقنية دفاعية: كل مبلغ يُخزَّن مقرباً لمنزلتين عشريتين وضمن سقف منطقي."""
+    try:
+        v = round(float(x or 0), 2)
+    except (TypeError, ValueError):
+        raise RuleError("قيمة مبلغ غير صالحة.")
+    if abs(v) > 999_999_999_999.0:
+        raise RuleError("المبلغ خارج النطاق المسموح (الحد 999,999,999,999).")
+    return v
+
+
+def _txt(value, field: str, max_len: int = 5000) -> str:
+    """تحديد طول النصوص لمنع إغراق قاعدة البيانات (DoS)."""
+    s_ = str(value or "")
+    if len(s_) > max_len:
+        raise RuleError(f"حقل {field} طويل جداً (الحد {max_len} محرفاً).")
+    return s_
+
+
 # ---------------------------------------------------------------------------
 # السنوات المالية
 # ---------------------------------------------------------------------------
@@ -84,6 +103,14 @@ def save_year(conn, data: dict, year_id: int | None = None) -> int:
     ).fetchone()
     if dup:
         raise RuleError(f"السنة المالية {year} مسجلة مسبقاً.")
+    overlap = conn.execute(
+        "SELECT year FROM financial_years WHERE id != ? AND date_from <= ? AND date_to >= ?",
+        (year_id or -1, date_to, date_from),
+    ).fetchone()
+    if overlap:
+        raise RuleError(
+            f"نطاق هذه السنة يتداخل مع السنة المالية {overlap['year']} المسجلة مسبقاً "
+            "(التداخل يسبب احتساباً مزدوجاً في التقارير ولقطات الإغلاق).")
     if year_id:
         conn.execute(
             "UPDATE financial_years SET year=?, date_from=?, date_to=?, notes=? WHERE id=?",
@@ -166,12 +193,15 @@ def get_customer(conn, customer_id: int) -> sqlite3.Row | None:
 
 def save_customer(conn, data: dict, customer_id: int | None = None) -> int:
     ensure_not_blank(data.get("name", ""), "اسم العميل")
+    for k, label in (("name", "اسم العميل"), ("address", "العنوان"),
+                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+        data[k] = _txt(data.get(k, ""), label)
     if customer_id:
         conn.execute(
             "UPDATE customers SET name=?, address=?, phone=?, opening_balance=?, notes=? "
             "WHERE id=?",
             (data["name"], data.get("address", ""), data.get("phone", ""),
-             float(data.get("opening_balance", 0) or 0), data.get("notes", ""), customer_id),
+             _m(data.get("opening_balance", 0)), data.get("notes", ""), customer_id),
         )
         conn.commit()
         return customer_id
@@ -179,7 +209,7 @@ def save_customer(conn, data: dict, customer_id: int | None = None) -> int:
         "INSERT INTO customers(name, address, phone, opening_balance, notes) "
         "VALUES(?,?,?,?,?)",
         (data["name"], data.get("address", ""), data.get("phone", ""),
-         float(data.get("opening_balance", 0) or 0), data.get("notes", "")),
+         _m(data.get("opening_balance", 0)), data.get("notes", "")),
     )
     cid = int(cur.lastrowid)
     _stamp_code(conn, "customers", cid, "CUST")
@@ -217,8 +247,25 @@ def get_employee(conn, employee_id: int) -> sqlite3.Row | None:
 
 def save_employee(conn, data: dict, employee_id: int | None = None) -> int:
     ensure_not_blank(data.get("name", ""), "اسم الموظف")
+    for k, label in (("name", "الاسم"), ("nationality", "الجنسية"),
+                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+        data[k] = _txt(data.get(k, ""), label)
     if data.get("emp_type") not in ("driver", "admin"):
         raise RuleError("اختر نوع الموظف (سائق / إداري).")
+    if employee_id:
+        old = get_employee(conn, employee_id)
+        if old and old["emp_type"] != data["emp_type"]:
+            linked = (_count(conn, "SELECT COUNT(*) FROM invoice_trips WHERE driver_id=?",
+                             (employee_id,))
+                      + _count(conn, "SELECT COUNT(*) FROM payrolls WHERE employee_id=?",
+                               (employee_id,))
+                      + _count(conn, "SELECT COUNT(*) FROM payment_vouchers WHERE employee_id=?",
+                               (employee_id,))
+                      + _count(conn, "SELECT COUNT(*) FROM vehicles WHERE default_driver_id=?",
+                               (employee_id,)))
+            if linked:
+                raise RuleError("لا يمكن تغيير نوع الموظف لوجود حركات/سيارات مرتبطة به "
+                                f"({linked} ارتباطاً).")
     vals = (data["name"], data.get("nationality", ""), data.get("phone", ""),
             data["emp_type"], data.get("notes", ""))
     if employee_id:
@@ -270,8 +317,15 @@ def get_vehicle(conn, vehicle_id: int) -> sqlite3.Row | None:
 
 def save_vehicle(conn, data: dict, vehicle_id: int | None = None) -> int:
     ensure_not_blank(data.get("plate_number", ""), "رقم اللوحة")
-    vals = (data["plate_number"], data.get("vehicle_type", ""),
-            data.get("default_driver_id") or None)
+    for k, label in (("plate_number", "رقم اللوحة"), ("vehicle_type", "النوع"),
+                     ("notes", "الملاحظات")):
+        data[k] = _txt(data.get(k, ""), label)
+    drv = data.get("default_driver_id") or None
+    if drv is not None:
+        emp = get_employee(conn, drv)
+        if emp is None or emp["emp_type"] != "driver":
+            raise RuleError("السائق الافتراضي يجب أن يكون موظفاً من نوع (سائق).")
+    vals = (data["plate_number"], data.get("vehicle_type", ""), drv)
     if vehicle_id:
         conn.execute(
             "UPDATE vehicles SET plate_number=?, vehicle_type=?, default_driver_id=? "
@@ -323,13 +377,16 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
     tbl = calc.account_table(kind)
     prefix = "CB" if kind == "cashbox" else "BNK"
     ensure_not_blank(data.get("name", ""), "اسم " + calc.account_kind_label(kind))
+    for k, label in (("name", "الاسم"), ("account_number", "رقم الحساب"),
+                     ("iban", "الآيبان"), ("notes", "الملاحظات")):
+        data[k] = _txt(data.get(k, ""), label)
     if kind == "bank":
         if account_id:
             conn.execute(
                 "UPDATE banks SET name=?, created_date=?, account_number=?, iban=?, "
                 "opening_balance=?, notes=? WHERE id=?",
                 (data["name"], data["created_date"], data.get("account_number", ""),
-                 data.get("iban", ""), float(data.get("opening_balance", 0) or 0),
+                 data.get("iban", ""), _m(data.get("opening_balance", 0)),
                  data.get("notes", ""), account_id),
             )
             conn.commit()
@@ -338,7 +395,7 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
             "INSERT INTO banks(name, created_date, account_number, iban, opening_balance, "
             "notes) VALUES(?,?,?,?,?,?)",
             (data["name"], data["created_date"], data.get("account_number", ""),
-             data.get("iban", ""), float(data.get("opening_balance", 0) or 0),
+             data.get("iban", ""), _m(data.get("opening_balance", 0)),
              data.get("notes", "")),
         )
     else:
@@ -347,7 +404,7 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
                 "UPDATE cashboxes SET name=?, created_date=?, opening_balance=?, notes=? "
                 "WHERE id=?",
                 (data["name"], data["created_date"],
-                 float(data.get("opening_balance", 0) or 0), data.get("notes", ""),
+                 _m(data.get("opening_balance", 0)), data.get("notes", ""),
                  account_id),
             )
             conn.commit()
@@ -356,7 +413,7 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
             "INSERT INTO cashboxes(name, created_date, opening_balance, notes) "
             "VALUES(?,?,?,?)",
             (data["name"], data["created_date"],
-             float(data.get("opening_balance", 0) or 0), data.get("notes", "")),
+             _m(data.get("opening_balance", 0)), data.get("notes", "")),
         )
     aid = int(cur.lastrowid)
     _stamp_code(conn, tbl, aid, prefix)
@@ -401,11 +458,18 @@ def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
     trips = data.get("trips") or []
     if not trips:
         raise RuleError("أضف نقلة واحدة على الأقل للفاتورة.")
+    data["notes"] = _txt(data.get("notes", ""), "ملاحظات الفاتورة")
     for t in trips:
-        if float(t.get("price", 0) or 0) <= 0:
+        t["from_loc"] = _txt(t.get("from_loc", ""), "مكان الانطلاق")
+        t["to_loc"] = _txt(t.get("to_loc", ""), "مكان الوصول")
+        t["notes"] = _txt(t.get("notes", ""), "ملاحظات النقلة")
+        for e in t.get("expenses", []):
+            e["notes"] = _txt(e.get("notes", ""), "بيان المصروف")
+    for t in trips:
+        if _m(t.get("price", 0)) <= 0:
             raise RuleError("سعر النقلة يجب أن يكون أكبر من صفر.")
         for e in t.get("expenses", []):
-            if float(e.get("amount", 0) or 0) <= 0:
+            if _m(e.get("amount", 0)) <= 0:
                 raise RuleError("مبلغ مصروف النقلة يجب أن يكون أكبر من صفر.")
 
     if invoice_id:
@@ -452,7 +516,7 @@ def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
                 "price=?, notes=? WHERE id=?",
                 (t.get("vehicle_id") or None, t.get("driver_id") or None,
                  t.get("from_loc", ""), t.get("to_loc", ""),
-                 float(t.get("price", 0) or 0), t.get("notes", ""), t["id"]),
+                 _m(t.get("price", 0)), t.get("notes", ""), t["id"]),
             )
             trip_id = int(t["id"])
             conn.execute("DELETE FROM trip_expenses WHERE trip_id=?", (trip_id,))
@@ -462,7 +526,7 @@ def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
                 "to_loc, price, notes) VALUES(?,?,?,?,?,?,?)",
                 (invoice_id, t.get("vehicle_id") or None, t.get("driver_id") or None,
                  t.get("from_loc", ""), t.get("to_loc", ""),
-                 float(t.get("price", 0) or 0), t.get("notes", "")),
+                 _m(t.get("price", 0)), t.get("notes", "")),
             )
             trip_id = int(cur.lastrowid)
         for e in t.get("expenses", []):
@@ -471,7 +535,7 @@ def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
             conn.execute(
                 "INSERT INTO trip_expenses(trip_id, expense_type, amount, notes) "
                 "VALUES(?,?,?,?)",
-                (trip_id, e["expense_type"], float(e.get("amount", 0) or 0),
+                (trip_id, e["expense_type"], _m(e.get("amount", 0)),
                  e.get("notes", "")),
             )
     conn.commit()
@@ -531,13 +595,14 @@ def list_receipts(conn, d_from=None, d_to=None, voucher_type=None) -> list[sqlit
 
 def save_receipt(conn, data: dict, voucher_id: int | None = None) -> int:
     date = data["date"]
-    amount = float(data.get("amount", 0) or 0)
+    amount = _m(data.get("amount", 0))
     ensure_not_blank(date, "تاريخ السند")
     ensure_positive(amount, "المبلغ")
     if data.get("voucher_type") not in ("customer", "other"):
         raise RuleError("اختر نوع السند.")
     if data["voucher_type"] == "customer" and not data.get("customer_id"):
         raise RuleError("اختر العميل المحصَّل منه.")
+    data["description"] = _txt(data.get("description", ""), "البيان")
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الإيداع (خزينة أو بنك).")
     _ensure_account_exists(conn, data["account_kind"], data["account_id"])
@@ -616,11 +681,12 @@ def _validate_payment(conn, data: dict) -> None:
     vt = data.get("voucher_type")
     if vt not in ("trip", "advance", "vehicle", "general"):
         raise RuleError("اختر نوع السند.")
-    amount = float(data.get("amount", 0) or 0)
+    amount = _m(data.get("amount", 0))
     ensure_positive(amount)
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الصرف (خزينة أو بنك).")
     _ensure_account_exists(conn, data["account_kind"], data["account_id"])
+    data["description"] = _txt(data.get("description", ""), "البيان")
     if vt == "trip" and not data.get("trip_id"):
         raise RuleError("اختر الرحلة (النقلة) التي يخصها المصروف.")
     if vt == "advance" and not data.get("employee_id"):
@@ -668,7 +734,7 @@ def save_payment(conn, data: dict, voucher_id: int | None = None) -> int:
              data.get("employee_id") if data["voucher_type"] == "advance" else None,
              data.get("vehicle_id") if data["voucher_type"] == "vehicle" else None,
              data.get("vehicle_expense", "") if data["voucher_type"] == "vehicle" else "",
-             float(data.get("amount", 0) or 0), data.get("description", ""), voucher_id),
+             _m(data.get("amount", 0)), data.get("description", ""), voucher_id),
         )
         conn.commit()
         return voucher_id
@@ -684,7 +750,7 @@ def save_payment(conn, data: dict, voucher_id: int | None = None) -> int:
          data.get("employee_id") if data["voucher_type"] == "advance" else None,
          data.get("vehicle_id") if data["voucher_type"] == "vehicle" else None,
          data.get("vehicle_expense", "") if data["voucher_type"] == "vehicle" else "",
-         float(data.get("amount", 0) or 0), data.get("description", "")),
+         _m(data.get("amount", 0)), data.get("description", "")),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -775,17 +841,26 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الصرف (خزينة أو بنك).")
     _ensure_account_exists(conn, data["account_kind"], data["account_id"])
-    base = float(data.get("base_salary", 0) or 0)
-    additions = float(data.get("additions", 0) or 0)
-    other_ded = float(data.get("other_deductions", 0) or 0)
+    base = _m(data.get("base_salary", 0))
+    additions = _m(data.get("additions", 0))
+    other_ded = _m(data.get("other_deductions", 0))
     ensure_positive(base, "الراتب الأساسي")
+    try:
+        p_month = int(data["period_month"])
+        p_year = int(data["period_year"])
+    except (TypeError, ValueError, KeyError):
+        raise RuleError("شهر/سنة الراتب غير صالحة.")
+    if not (1 <= p_month <= 12):
+        raise RuleError("شهر الراتب يجب أن يكون بين 1 و 12.")
+    if not (1900 <= p_year <= 2200):
+        raise RuleError("سنة الراتب غير منطقية.")
     if additions < 0 or other_ded < 0:
         raise RuleError("لا يمكن إدخال قيم سالبة في الإضافات أو الخصومات.")
 
-    settlements = data.get("settlements") or []  # [(payment_voucher_id, amount)]
-    total_settled = sum(a for _, a in settlements)
+    settlements = [(v, _m(a)) for v, a in (data.get("settlements") or [])]
+    total_settled = round(sum(a for _, a in settlements), 2)
     adv_ded = data.get("advance_deduction")
-    adv_ded = float(total_settled if adv_ded is None else (adv_ded or 0))
+    adv_ded = _m(total_settled if adv_ded is None else adv_ded)
     if adv_ded < 0:
         raise RuleError("لا يمكن إدخال قيم سالبة في الإضافات أو الخصومات.")
     if abs(total_settled - adv_ded) > 0.01:
@@ -810,11 +885,11 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
         if amount > rem_map[vid] + 0.01:
             raise RuleError("قيمة الخصم من إحدى السلف أكبر من المتبقي منها.")
 
-    net = base + additions - adv_ded - other_ded
+    net = round(base + additions - adv_ded - other_ded, 2)
     if net < 0:
         raise RuleError("صافي الراتب سالب: راجع الإضافات والخصومات.")
 
-    vals = (date, data["employee_id"], int(data["period_year"]), int(data["period_month"]),
+    vals = (date, data["employee_id"], p_year, p_month,
             data["account_kind"], data["account_id"], base, additions,
             data.get("additions_note", ""), adv_ded, other_ded, net,
             data.get("notes", ""))

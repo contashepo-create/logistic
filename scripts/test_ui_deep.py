@@ -504,7 +504,8 @@ def _invoice():
     t = calc.invoice_totals(conn, inv)
     assert t["trips_total"] == 3900 and t["expenses_total"] == 350
     full = calc.get_invoice_full(conn, inv)
-    assert len(full["trips"]) == 2 and len(full["attachments"] or "[]") > 5
+    assert len(full["trips"]) == 2 and isinstance(full["attachments"], list) \
+        and len(full["attachments"]) >= 1
     # تعديلها: غيّر سعر أول نقلة
     d2 = InvoiceDialog(win, inv)
     d2.trips[0]["price"] = 3500

@@ -39,13 +39,38 @@ def attachments_dir() -> Path:
 
 
 def get_conn() -> sqlite3.Connection:
-    """إرجاع اتصال موحّد (Singleton) مع تفعيل المفاتيح الأجنبية."""
+    """إرجاع اتصال موحّد (Singleton) مع تفعيل المفاتيح الأجنبية.
+
+    تحصين: ملف القاعدة بصلاحية 600 ومجلد المرفقات 700 (قراءة/كتابة للمالك فقط).
+    """
     global _conn
     if _conn is None:
         _conn = sqlite3.connect(str(db_path()), check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            import os as _os
+            _os.chmod(db_path(), 0o600)
+            _os.chmod(data_dir(), 0o700)
+        except OSError:
+            pass
     return _conn
+
+
+def backup_database(dest_dir: Path | None = None) -> Path:
+    """نسخة احتياطية متناسقة (sqlite backup API) باسم مميز بالوقت."""
+    import shutil as _sh
+    from datetime import datetime as _dt
+    src = get_conn()
+    bdir = dest_dir or (data_dir() / "backups")
+    bdir.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    dest_path = bdir / f"logistic_backup_{stamp}.db"
+    dst = sqlite3.connect(str(dest_path))
+    with dst:
+        src.backup(dst)
+    dst.close()
+    return dest_path
 
 
 def close_conn() -> None:

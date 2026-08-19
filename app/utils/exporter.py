@@ -95,7 +95,15 @@ def build_report_html(conn: sqlite3.Connection, title: str, subtitle: str = "",
 # ---------------------------------------------------------------------------
 # حوار حفظ الملف
 # ---------------------------------------------------------------------------
+def _safe_filename(name: str) -> str:
+    """تطهير اسم الملف من محارف غير صالحة (مسارات فاصلة إلخ)."""
+    import re as _re
+    clean = _re.sub(r'[\\/:*?"<>|]', "-", str(name)).strip().strip(".")
+    return clean[:120] or "export"
+
+
 def _ask_save_path(parent: QWidget, default_name: str, patterns: list[str]) -> str | None:
+    default_name = _safe_filename(default_name)
     path, _ = QFileDialog.getSaveFileName(parent, "حفظ الملف", default_name,
                                           ";;".join(patterns))
     return path or None
@@ -125,6 +133,7 @@ def export_excel(parent: QWidget, conn: sqlite3.Connection, title: str,
                  headers: list[str], rows: list[list], default_name: str,
                  summary_lines: list[tuple[str, str]] | None = None) -> str | None:
     """تصدير جدول إلى Excel مع ورقة RTL وترويسة منسقة."""
+    default_name = _safe_filename(default_name)
     path = _ask_save_path(parent, default_name, ["Excel (*.xlsx)"])
     if not path:
         return None
@@ -229,6 +238,7 @@ def _pdf_to_file(html: str, path: str, printer: QPrinter | None = None) -> None:
 
 
 def export_pdf(parent: QWidget, html: str, default_name: str) -> str | None:
+    default_name = _safe_filename(default_name)
     path = _ask_save_path(parent, default_name, ["PDF (*.pdf)"])
     if not path:
         return None

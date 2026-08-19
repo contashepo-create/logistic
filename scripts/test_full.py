@@ -447,10 +447,13 @@ def main() -> None:  # noqa: C901 — منظومة فحص
     check("حقن SQL: جدول العملاء موجود", "customers" in tables_after)
     n = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
     check("حقن SQL: لم تُحذف بيانات العملاء", n >= 2)
-    # نص طويل جداً 10KB
-    long_text = "أ" * 10240
+    # نص طويل داخل الحد المسموح + رفض ما فوق الحد
+    long_text = "أ" * 4000
     lid = repo.save_customer(conn, {"name": long_text, "opening_balance": 0})
-    check("نص 10KB يُخزن ويُسترجع", len(repo.get_customer(conn, lid)["name"]) == 10240)
+    check("نص 4000 محرف يُخزن ويُسترجع",
+          len(repo.get_customer(conn, lid)["name"]) == 4000)
+    expect_reject("نص 6000 محرف يُرفض (سقف الحماية)",
+                  lambda: repo.save_customer(conn, {"name": "ب" * 6000}))
     # فاتورة بحقول محقونة في كل النصوص
     inj = {"from_loc": "';--", "to_loc": "<b>", "notes": "'; DROP TABLE x; --"}
     iinv = repo.save_invoice(conn, {"date": "2026-03-05", "customer_id": ids["c1"],

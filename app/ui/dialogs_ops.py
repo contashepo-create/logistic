@@ -302,7 +302,13 @@ class InvoiceDialog(QDialog):
         self.customer_combo.select(d["customer_id"])
         self.notes_edit.setText(d.get("notes", "") or "")
         import json
-        self.attachments = list(json.loads(d.get("attachments", "[]") or []))
+        raw_att = d.get("attachments", [])
+        if isinstance(raw_att, str):
+            try:
+                raw_att = json.loads(raw_att or "[]")
+            except (ValueError, TypeError):
+                raw_att = []
+        self.attachments = list(raw_att) if isinstance(raw_att, list) else []
         self.trips = [dict(t) for t in d["trips"]]
         self.refresh()
 

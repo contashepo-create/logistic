@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from .. import APP_TITLE, __version__
 from ..core import db, repo
-from .widgets import PageFrame, VDateEdit, info
+from .widgets import PageFrame, VDateEdit, info, warn
 
 
 class SettingsPage(QWidget):
@@ -44,10 +44,16 @@ class SettingsPage(QWidget):
         save_btn = QPushButton("💾 حفظ الإعدادات")
         save_btn.setObjectName("primary")
         save_btn.clicked.connect(self.save)
+        backup_btn = QPushButton("🛡️ نسخة احتياطية الآن")
+        backup_btn.clicked.connect(self.backup_now)
         self.frame.body.addStretch(1)
         lay = QHBoxLayout()
         lay.addWidget(save_btn)
+        lay.addWidget(backup_btn)
+        lay.addStretch(1)
         self.frame.add_layout(lay)
+        self.backup_label = QLabel("")
+        self.frame.add_widget(self.backup_label, stretch=0)
 
         info_box = QGroupBox("معلومات النظام")
         il = QVBoxLayout(info_box)
@@ -57,6 +63,16 @@ class SettingsPage(QWidget):
         il.addWidget(QLabel("النظام يعمل بدون اتصال بالإنترنت، والبيانات محلية بالكامل."))
         self.frame.add_widget(info_box, stretch=0)
         self.frame.body.addStretch(2)
+
+    def backup_now(self) -> None:
+        """نسخة احتياطية متناسقة إلى مجلد backups داخل مجلد البيانات."""
+        try:
+            from ..core.db import backup_database
+            path = backup_database()
+            self.backup_label.setText(f"آخر نسخة احتياطية: {path}")
+            info(self, f"تم إنشاء نسخة احتياطية بنجاح:\n{path}")
+        except Exception as e:  # noqa: BLE001
+            warn(self, f"تعذر إنشاء النسخة الاحتياطية:\n{e}")
 
     def save(self) -> None:
         conn = db.get_conn()
