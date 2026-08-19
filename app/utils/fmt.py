@@ -2,6 +2,7 @@
 """أدوات التنسيق: الأرقام العربية، المبالغ، التواريخ، أسماء الشهور."""
 from __future__ import annotations
 
+import math
 import re
 
 ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -51,7 +52,7 @@ def normalize_digits(text: str) -> str:
 
 
 def parse_float(text, default: float = 0.0) -> float:
-    """قراءة رقم من نص (يتقبل فواصل الآلاف والأرقام العربية)."""
+    """قراءة رقم من نص (يتقبل فواصل الآلاف والأرقام العربية) — يرفض NaN/inf."""
     if text is None:
         return default
     s = normalize_digits(str(text)).replace(",", "").replace("،", "").strip()
@@ -59,9 +60,12 @@ def parse_float(text, default: float = 0.0) -> float:
         return default
     s = s.replace("٫", ".")  # فاصلة عشرية عربية
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
         raise ValueError(f"قيمة رقمية غير صالحة: {text}")
+    if not math.isfinite(v):
+        raise ValueError(f"قيمة رقمية غير صالحة (غير منتهية): {text}")
+    return v
 
 
 def money(x) -> str:

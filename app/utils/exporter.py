@@ -215,6 +215,19 @@ def _make_doc(html: str) -> QTextDocument:
     return doc
 
 
+def _pdf_to_file(html: str, path: str, printer: QPrinter | None = None) -> None:
+    """كتابة مستند PDF إلى مسار (مشترك بين تصدير PDF والطباعة)."""
+    pr = printer
+    if pr is None:
+        pr = QPrinter(QPrinter.PrinterMode.HighResolution)
+        pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        pr.setOutputFileName(path)
+        pr.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    pr.setPageMargins(QMarginsF(12, 12, 12, 14), QPageLayout.Unit.Millimeter)
+    doc = _make_doc(html)
+    doc.print_(pr)
+
+
 def export_pdf(parent: QWidget, html: str, default_name: str) -> str | None:
     path = _ask_save_path(parent, default_name, ["PDF (*.pdf)"])
     if not path:
@@ -224,13 +237,7 @@ def export_pdf(parent: QWidget, html: str, default_name: str) -> str | None:
     if not path.lower().endswith(".pdf"):
         path += ".pdf"
     try:
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-        printer.setOutputFileName(path)
-        printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-        printer.setPageMargins(QMarginsF(12, 12, 12, 14), QPageLayout.Unit.Millimeter)
-        doc = _make_doc(html)
-        doc.print_(printer)
+        _pdf_to_file(html, path)
         _notify(parent, f"تم إنشاء ملف PDF:\n{path}")
         return path
     except Exception as e:  # noqa: BLE001
@@ -241,10 +248,18 @@ def export_pdf(parent: QWidget, html: str, default_name: str) -> str | None:
 
 
 def print_html(parent: QWidget, html: str) -> None:
-    """فتح حوار الطباعة وطباعة المستند بتنسيق احترافي."""
+    """فتح حوار الطباعة وطباعة المستند بتنسيق احترافي.
+
+    في وضع الاختبار الآلي (LOGISTIC_HEADLESS) يُولَّد ملف PDF مؤقت
+    بدلاً من فتح حوار الطباعة.
+    """
+    if os.environ.get("LOGISTIC_HEADLESS"):
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "logistic_print_test.pdf")
+        _pdf_to_file(html, path)
+        return
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-    printer.setPageMargins(QMarginsF(12, 12, 12, 14), QPageLayout.Unit.Millimeter)
     dlg = QPrintDialog(printer, parent)
     dlg.setWindowTitle("طباعة")
     if dlg.exec() == QDialog.DialogCode.Accepted:

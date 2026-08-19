@@ -362,7 +362,12 @@ class PageFrame(QWidget):
         self.body.addLayout(lay)
 
     def add_layout_at(self, index: int, lay) -> None:
-        self.body.insertLayout(index, lay)
+        """إدراج عنصر (ودج أو مخطط) في موضع محدد من جسم الصفحة."""
+        from PySide6.QtWidgets import QLayout
+        if isinstance(lay, QLayout):
+            self.body.insertLayout(index, lay)
+        else:
+            self.body.insertWidget(index, lay)
 
 
 # ---------------------------------------------------------------------------

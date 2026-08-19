@@ -8,7 +8,7 @@ from ..utils.fmt import EMP_TYPES
 from .dialogs_payroll import PayrollDialog
 from .pages_base import CrudPage
 from .pages_ops import FilterRow
-from .widgets import DictCombo, TotalsBar, confirm, warn
+from .widgets import DataTable, DictCombo, TotalsBar, confirm, warn
 
 
 class PayrollPage(CrudPage):

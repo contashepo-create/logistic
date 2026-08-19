@@ -166,8 +166,13 @@ class PayrollDialog(QDialog):
         self.other_ded_edit.setReadOnly(True)
         self.notes_edit.setReadOnly(True)
         for r in range(self.adv_table.rowCount()):
-            if self.adv_table.cellWidget(r, 5):
-                for sb in self.adv_table.cellWidget(r, 5).findChildren(QDoubleSpinBox):
+            w = self.adv_table.cellWidget(r, 5)
+            if w is None:
+                continue
+            if isinstance(w, QDoubleSpinBox):
+                w.setEnabled(False)
+            else:
+                for sb in w.findChildren(QDoubleSpinBox):
                     sb.setEnabled(False)
 
     # ------------------------------------------------------------------
@@ -208,7 +213,11 @@ class PayrollDialog(QDialog):
         total = 0.0
         for r in range(self.adv_table.rowCount()):
             w = self.adv_table.cellWidget(r, 5)
-            if w:
+            if w is None:
+                continue
+            if isinstance(w, QDoubleSpinBox):
+                total += w.value()
+            else:
                 for sb in w.findChildren(QDoubleSpinBox):
                     total += sb.value()
         return round(total, 2)
@@ -237,9 +246,10 @@ class PayrollDialog(QDialog):
         for i, a in enumerate(getattr(self, "_adv_rows", [])):
             w = self.adv_table.cellWidget(i, 5)
             val = 0.0
-            if w:
-                for sb in w.findChildren(QDoubleSpinBox):
-                    val = round(sb.value(), 2)
+            if isinstance(w, QDoubleSpinBox):
+                val = round(w.value(), 2)
+            elif w and w.findChildren(QDoubleSpinBox):
+                val = round(w.findChildren(QDoubleSpinBox)[0].value(), 2)
             if val > 0:
                 settlements.append((a["id"], val))
         data = {

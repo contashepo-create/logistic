@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QVBoxLayout, QWidget,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE, __version__
@@ -45,7 +45,7 @@ class SettingsPage(QWidget):
         save_btn.setObjectName("primary")
         save_btn.clicked.connect(self.save)
         self.frame.body.addStretch(1)
-        lay = QHBoxLayoutWrap()
+        lay = QHBoxLayout()
         lay.addWidget(save_btn)
         self.frame.add_layout(lay)
 

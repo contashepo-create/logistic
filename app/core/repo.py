@@ -498,6 +498,13 @@ def delete_invoice(conn, invoice_id: int) -> None:
     conn.commit()
 
 
+def _ensure_account_exists(conn, kind: str, account_id) -> None:
+    """التأكد أن الخزينة/البنك المشار إليه موجود فعلاً (منع مراجع وهمية)."""
+    if get_account(conn, kind, account_id) is None:
+        raise RuleError(
+            f"جهة {'الخزينة' if kind == 'cashbox' else 'البنك'} المحددة غير موجودة.")
+
+
 # ---------------------------------------------------------------------------
 # سندات القبض
 # ---------------------------------------------------------------------------
@@ -533,9 +540,12 @@ def save_receipt(conn, data: dict, voucher_id: int | None = None) -> int:
         raise RuleError("اختر العميل المحصَّل منه.")
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الإيداع (خزينة أو بنك).")
+    _ensure_account_exists(conn, data["account_kind"], data["account_id"])
     if data.get("voucher_type") == "other":
         customer_id = None
     else:
+        if get_customer(conn, data["customer_id"]) is None:
+            raise RuleError("العميل المحدد غير موجود.")
         customer_id = data["customer_id"]
     vals = (date, data["account_kind"], data["account_id"], data["voucher_type"],
             customer_id, amount, data.get("description", ""))
@@ -610,6 +620,7 @@ def _validate_payment(conn, data: dict) -> None:
     ensure_positive(amount)
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الصرف (خزينة أو بنك).")
+    _ensure_account_exists(conn, data["account_kind"], data["account_id"])
     if vt == "trip" and not data.get("trip_id"):
         raise RuleError("اختر الرحلة (النقلة) التي يخصها المصروف.")
     if vt == "advance" and not data.get("employee_id"):
@@ -621,6 +632,10 @@ def _validate_payment(conn, data: dict) -> None:
                          (data["trip_id"],)).fetchone()
         if not t:
             raise RuleError("الرحلة المحددة غير موجودة.")
+    if vt == "advance" and get_employee(conn, data["employee_id"]) is None:
+        raise RuleError("الموظف المحدد غير موجود.")
+    if vt == "vehicle" and get_vehicle(conn, data["vehicle_id"]) is None:
+        raise RuleError("السيارة المحددة غير موجودة.")
 
 
 def save_payment(conn, data: dict, voucher_id: int | None = None) -> int:
@@ -755,8 +770,11 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
     ensure_not_blank(date, "تاريخ الصرف")
     if not data.get("employee_id"):
         raise RuleError("اختر الموظف/السائق.")
+    if get_employee(conn, data["employee_id"]) is None:
+        raise RuleError("الموظف المحدد غير موجود.")
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الصرف (خزينة أو بنك).")
+    _ensure_account_exists(conn, data["account_kind"], data["account_id"])
     base = float(data.get("base_salary", 0) or 0)
     additions = float(data.get("additions", 0) or 0)
     other_ded = float(data.get("other_deductions", 0) or 0)

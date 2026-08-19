@@ -609,7 +609,7 @@ class PaymentDialog(FormDialog):
         for key, label in PAYMENT_TYPES.items():
             self.type_combo.addItem(label, key)
         self.type_combo.currentIndexChanged.connect(
-            lambda _: self.stack.setCurrentIndex(self.type_combo.currentIndex()))
+            lambda _: self.stack_lay.setCurrentIndex(self.type_combo.currentIndex()))
         self.add_row("النوع والتوجيه *", self.type_combo)
 
         # صفوف التوجيه حسب النوع

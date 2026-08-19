@@ -70,14 +70,7 @@ class InvoicesPage(CrudPage):
         conn = db.get_conn()
         self.customer_combo = DictCombo()
         self.customer_combo.load(repo.list_customers(conn))
-        self.filter_row.add_combo("العميل", [("all", "كل العملاء")])
-        # استبدال القائمة بخاصة العملاء
-        lay = self.filter_row.layout()
-        lay.removeWidget(self.filter_row.extra_combo)
-        self.filter_row.extra_combo.deleteLater()
-        self.filter_row.extra_combo = self.customer_combo
-        lay.insertWidget(lay.count() - 2, QLabel("العميل"))
-        lay.insertWidget(lay.count() - 2, self.customer_combo)
+        self.filter_row.add_filter("العميل", self.customer_combo)
         self.filter_row.refresh_btn.clicked.connect(self.refresh)
 
         self.set_table(DataTable(
