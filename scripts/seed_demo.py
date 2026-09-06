@@ -22,20 +22,20 @@ def seed(conn) -> dict:
     repo.save_year(conn, {"year": y, "date_from": f"{y}-01-01",
                           "date_to": f"{y}-12-31", "notes": "سنة تشغيلية"})
     ids["cust1"] = repo.save_customer(conn, {
-        "name": "مؤسسة الرياض للإنشاءات", "phone": "0551112222",
+        "name": "مؤسسة الرياض للإنشاءات", "phone": "0551239988",
         "address": "الرياض — حي الصناعية", "opening_balance": 15000,
         "notes": "عميل مشاريع"})
     ids["cust2"] = repo.save_customer(conn, {
-        "name": "شركة مكة للمقاولات", "phone": "0563334444",
+        "name": "شركة مكة للمقاولات", "phone": "0563447788",
         "address": "مكة المكرمة", "opening_balance": 0, "notes": ""})
     ids["drv1"] = repo.save_employee(conn, {
-        "name": "أحمد الغامدي", "nationality": "سعودي", "phone": "0501111111",
+        "name": "أحمد الغامدي", "nationality": "سعودي", "phone": "0501234567",
         "emp_type": "driver", "notes": ""})
     ids["drv2"] = repo.save_employee(conn, {
-        "name": "خالد المصري", "nationality": "مصري", "phone": "0502222222",
+        "name": "خالد المصري", "nationality": "مصري", "phone": "0502345678",
         "emp_type": "driver", "notes": ""})
     ids["adm1"] = repo.save_employee(conn, {
-        "name": "سالم الحربي", "nationality": "سعودي", "phone": "0503333333",
+        "name": "سالم الحربي", "nationality": "سعودي", "phone": "0503456789",
         "emp_type": "admin", "notes": "مسؤول حركة"})
     ids["veh1"] = repo.save_vehicle(conn, {
         "plate_number": "أ ب ج 1234", "vehicle_type": "تريلة",

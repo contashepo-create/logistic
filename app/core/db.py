@@ -486,6 +486,16 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("payment_vouchers", "quantity", "REAL NOT NULL DEFAULT 1"),
     ("payment_vouchers", "unit_amount", "REAL NOT NULL DEFAULT 0"),
     ("payrolls", "deduction_deduction", "REAL NOT NULL DEFAULT 0"),
+    # بيانات التواصل والائتمان (مطابقة لنسخة الويب)
+    ("customers", "name_en", "TEXT DEFAULT ''"),
+    ("customers", "email", "TEXT DEFAULT ''"),
+    ("customers", "contact_person", "TEXT DEFAULT ''"),
+    ("customers", "credit_limit", "REAL NOT NULL DEFAULT 0"),
+    ("customers", "payment_terms", "INTEGER NOT NULL DEFAULT 0"),
+    ("suppliers", "name_en", "TEXT DEFAULT ''"),
+    ("suppliers", "email", "TEXT DEFAULT ''"),
+    ("suppliers", "contact_person", "TEXT DEFAULT ''"),
+    ("suppliers", "address", "TEXT DEFAULT ''"),
 ]
 
 

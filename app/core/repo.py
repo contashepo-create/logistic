@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import re
 import json
 import shutil
 import sqlite3
@@ -19,7 +20,10 @@ from .rules import (
     RuleError, ensure_date_in_open_year, ensure_movement_editable,
     ensure_positive, ensure_not_blank, safe_financial_year
 )
-from .security import safe_text
+from .security import (
+    is_plausible_identity_text, safe_account_number, safe_email, safe_iban,
+    safe_phone, safe_text,
+)
 
 # ---------------------------------------------------------------------------
 # الإعدادات
@@ -249,12 +253,43 @@ def _tax_values(data: dict) -> list:
     return [data.get(c, "") for c in TAX_COLUMNS]
 
 
+def _ensure_unique_contact(conn, table: str, phone: str, email: str,
+                           exclude_id: int | None, label: str) -> None:
+    """يمنع تسجيل هاتف أو بريد لجهة أخرى (تفادي الحسابات المكررة)."""
+    ex = exclude_id or -1
+    if phone and conn.execute(
+            f"SELECT id FROM {table} WHERE phone=? AND id != ?",
+            (phone, ex)).fetchone():
+        raise RuleError(f"رقم الهاتف مسجل مسبقاً لـ{label} آخر.")
+    if email and conn.execute(
+            f"SELECT id FROM {table} WHERE email=? AND id != ?",
+            (email, ex)).fetchone():
+        raise RuleError(f"البريد الإلكتروني مسجل مسبقاً لـ{label} آخر.")
+
+
 def save_customer(conn, data: dict, customer_id: int | None = None) -> int:
     """حفظ العميل مع الحزمة الضريبية والعنوان الوطني (مطابق لنسخة الويب)."""
     ensure_not_blank(data.get("name", ""), "اسم العميل")
     for k, label in (("name", "اسم العميل"), ("address", "العنوان"),
-                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+                     ("notes", "الملاحظات"), ("name_en", "الاسم بالإنجليزية"),
+                     ("contact_person", "مسؤول التواصل")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للعميل، وليس قيمة تجريبية أو وهمية.")
+    if data["address"] and not is_plausible_identity_text(data["address"]):
+        raise RuleError("عنوان العميل يبدو غير صحيح أو وهمياً.")
+    if data["contact_person"] and not is_plausible_identity_text(data["contact_person"]):
+        raise RuleError("اسم مسؤول التواصل غير صحيح أو وهمي.")
+    data["phone"] = safe_phone(data.get("phone", ""))
+    data["email"] = safe_email(data.get("email", ""))
+    credit_limit = _m(data.get("credit_limit", 0))
+    if credit_limit < 0:
+        raise RuleError("الحد الائتماني لا يمكن أن يكون سالباً.")
+    data["credit_limit"] = credit_limit
+    data["payment_terms"] = int(_bounded(data.get("payment_terms", 0),
+                                         "مهلة السداد", 0, 3650, True))
+    _ensure_unique_contact(conn, "customers", data["phone"], data["email"],
+                           customer_id, "عميل")
     # تطبيع الحزمة الضريبية + تحقّق شامل برسائل عربية
     normalized = tax.normalize_tax_profile({
         c: data.get(c, "") for c in TAX_COLUMNS})
@@ -266,18 +301,26 @@ def save_customer(conn, data: dict, customer_id: int | None = None) -> int:
     if customer_id:
         conn.execute(
             f"UPDATE customers SET name=?, address=?, phone=?, opening_balance=?, "
-            f"notes=?, {_tax_columns_sql(data)} WHERE id=?",
+            f"notes=?, name_en=?, email=?, contact_person=?, credit_limit=?, "
+            f"payment_terms=?, {_tax_columns_sql(data)} WHERE id=?",
             (data["name"], data.get("address", ""), data.get("phone", ""),
              _m(data.get("opening_balance", 0)), data.get("notes", ""),
+             data.get("name_en", ""), data.get("email", ""),
+             data.get("contact_person", ""), data.get("credit_limit", 0),
+             data.get("payment_terms", 0),
              *_tax_values(data), customer_id),
         )
         conn.commit()
         return customer_id
     cur = conn.execute(
         f"INSERT INTO customers(name, address, phone, opening_balance, notes, "
-        f"{', '.join(TAX_COLUMNS)}) VALUES(?,?,?,?,?{',?' * len(TAX_COLUMNS)})",
+        f"name_en, email, contact_person, credit_limit, payment_terms, "
+        f"{', '.join(TAX_COLUMNS)}) VALUES(?,?,?,?,?,?,?,?,?,?{',?' * len(TAX_COLUMNS)})",
         (data["name"], data.get("address", ""), data.get("phone", ""),
          _m(data.get("opening_balance", 0)), data.get("notes", ""),
+         data.get("name_en", ""), data.get("email", ""),
+         data.get("contact_person", ""), data.get("credit_limit", 0),
+         data.get("payment_terms", 0),
          *_tax_values(data)),
     )
     cid = int(cur.lastrowid)
@@ -319,8 +362,11 @@ def get_employee(conn, employee_id: int) -> sqlite3.Row | None:
 def save_employee(conn, data: dict, employee_id: int | None = None) -> int:
     ensure_not_blank(data.get("name", ""), "اسم الموظف")
     for k, label in (("name", "الاسم"), ("nationality", "الجنسية"),
-                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+                     ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للموظف، وليس قيمة تجريبية أو وهمية.")
+    data["phone"] = safe_phone(data.get("phone", ""))
     if data.get("emp_type") not in ("driver", "admin"):
         raise RuleError("اختر نوع الموظف (سائق / إداري).")
     base_salary = _bounded(data.get("base_salary", 0), "الراتب الأساسي", 0, 1_000_000_000)
@@ -392,6 +438,10 @@ def save_vehicle(conn, data: dict, vehicle_id: int | None = None) -> int:
     for k, label in (("plate_number", "رقم اللوحة"), ("vehicle_type", "النوع"),
                      ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    plate = data["plate_number"]
+    if (not re.search(r"[A-Za-z\u0600-\u06FF0-9]", plate)
+            or re.fullmatch(r"(.)\1{3,}", plate.replace(" ", ""))):
+        raise RuleError("رقم اللوحة غير صالح أو وهمي.")
     drv = data.get("default_driver_id") or None
     if drv is not None:
         emp = get_employee(conn, drv)
@@ -449,9 +499,12 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
     tbl = calc.account_table(kind)
     prefix = "CB" if kind == "cashbox" else "BNK"
     ensure_not_blank(data.get("name", ""), "اسم " + calc.account_kind_label(kind))
-    for k, label in (("name", "الاسم"), ("account_number", "رقم الحساب"),
-                     ("iban", "الآيبان"), ("notes", "الملاحظات")):
+    for k, label in (("name", "الاسم"), ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("اسم الحساب غير صحيح أو وهمي.")
+    data["account_number"] = safe_account_number(data.get("account_number", ""))
+    data["iban"] = safe_iban(data.get("iban", ""))
     if kind == "bank":
         if account_id:
             conn.execute(
@@ -1255,6 +1308,16 @@ def save_supplier(conn, data: dict, supplier_id: int | None = None) -> int:
     ensure_not_blank(data.get("name", ""), "اسم المورّد")
     for key, label in SUPPLIER_TEXT_FIELDS:
         data[key] = _txt(data.get(key, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للمورّد، وليس قيمة تجريبية أو وهمية.")
+    if data["address"] and not is_plausible_identity_text(data["address"]):
+        raise RuleError("عنوان المورّد غير صحيح أو وهمي.")
+    if data["contact_person"] and not is_plausible_identity_text(data["contact_person"]):
+        raise RuleError("اسم مسؤول التواصل غير صحيح أو وهمي.")
+    data["phone"] = safe_phone(data.get("phone", ""))
+    data["email"] = safe_email(data.get("email", ""))
+    _ensure_unique_contact(conn, "suppliers", data["phone"], data["email"],
+                           supplier_id, "مورّد")
     normalized = tax.normalize_tax_profile({c: data.get(c, "") for c in TAX_COLUMNS})
     errors = tax.validate_tax_profile(normalized)
     if errors:

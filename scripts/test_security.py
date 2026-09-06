@@ -91,11 +91,17 @@ def main() -> None:
                                                      "opening_balance": 0}))
     check("looks_malicious تكتشف كل الأنماط",
           all(looks_malicious(p) for p in attacks))
+    for label in ("—", "🌍🚛", "12345", "test", "xxx", "123456", "أأأأ", "عميل"):
+        reject(f"اسم غير معقول ({label}) يُرفض",
+               lambda label=label: repo.save_customer(
+                   conn, {"name": label, "opening_balance": 0}))
 
+    # كل اسم يجب أن يحوي حرفين على الأقل (قاعدة isPlausibleIdentityText في الويب)
     benign = ["عميل عادي", "مؤسسة النقل الحديثة", "O'Brien", "شركة أ.ب.ج",
-              "a' OR '1'='1", "—", "🌍🚛", "%s%s%s"]
+              "a' OR '1'='1", "مؤسسة — للتجارة", "مؤسسة 🌍🚛 للنقل"]
     for i, p in enumerate(benign):
-        cid = repo.save_customer(conn, {"name": p, "opening_balance": 0})
+        cid = repo.save_customer(conn, {"name": p, "opening_balance": 0,
+                                        "phone": f"050{i}1{i}2{i}3{i}4"})
         got = repo.get_customer(conn, cid)["name"]
         check(f"نص سليم #{i} يُخزن كما هو", got == p, f"({p!r} → {got!r})")
 

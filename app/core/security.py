@@ -102,3 +102,111 @@ def neutralize_formula(value):
     if value.startswith(FORMULA_PREFIXES):
         return "'" + value
     return value
+
+# ---------------------------------------------------------------------------
+# حقول الهوية والتواصل (مطابقة لـ security.ts)
+# ---------------------------------------------------------------------------
+_ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩"
+_EASTERN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
+EMAIL_RE = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
+
+PLACEHOLDER_VALUES = {
+    "test", "testing", "demo", "dummy", "fake", "sample", "none", "null",
+    "undefined", "unknown", "n/a", "na", "xxx", "xxxx",
+    "اختبار", "تجربة", "تجريبي", "وهمي", "غير معروف", "بدون", "لا يوجد",
+    "لايوجد", "اسم", "عنوان", "عميل", "مستخدم", "مورد", "شركة",
+    "شركة وهمية", "شركة تجريبية",
+    "customer", "user", "supplier", "company",
+}
+
+
+def ascii_digits(value) -> str:
+    """يحوّل الأرقام العربية/الفارسية إلى أرقام لاتينية."""
+    out: list[str] = []
+    for ch in str(value if value is not None else ""):
+        i = _ARABIC_DIGITS.find(ch)
+        if i < 0:
+            i = _EASTERN_DIGITS.find(ch)
+        out.append(str(i) if i >= 0 else ch)
+    return "".join(out)
+
+
+def _normalized_placeholder(value: str) -> str:
+    s = value.lower()
+    return re.sub(r"[\s._\-/\\]+", " ", s).strip()
+
+
+def is_plausible_identity_text(value) -> bool:
+    """يرفض القيم الوهمية الشائعة والتكرار المصطنع في حقول الهوية.
+
+    لا يدّعي إثبات الهوية — فقط يمنع «test» و«xxx» و«1111» وأشباهها
+    من دخول السجلات المحاسبية.
+    """
+    s = sanitize_text(value, 500)
+    normalized = _normalized_placeholder(s)
+    if not normalized or normalized in PLACEHOLDER_VALUES:
+        return False
+    compact = normalized.replace(" ", "")
+    if len(compact) >= 3 and re.fullmatch(r"(.)\1+", compact):
+        return False
+    if re.fullmatch(r"(?:1234567890|0123456789|9876543210|0987654321)+", compact):
+        return False
+    return len(re.findall(r"[A-Za-z\u0600-\u06FF]", s)) >= 2
+
+
+def normalize_phone(value) -> str:
+    raw = ascii_digits(value).strip()
+    digits = re.sub(r"\D", "", raw)
+    return digits[2:] if digits.startswith("00") else digits
+
+
+def safe_phone(value, required: bool = False, label: str = "الهاتف") -> str:
+    """يتحقق من رقم الهاتف ويوحّد صيغته (8–15 رقماً، بلا أرقام وهمية)."""
+    raw = strip_control_chars(ascii_digits(value)).strip()
+    if not raw:
+        if required:
+            raise RuleError(f"رقم {label} مطلوب.")
+        return ""
+    if (looks_malicious(raw) or not re.fullmatch(r"\+?[\d\s().-]+", raw)
+            or raw.count("+") > 1):
+        raise RuleError(f"رقم {label} يحتوي على رموز غير مسموح بها.")
+    normalized = normalize_phone(raw)
+    digits = re.sub(r"\D", "", normalized)
+    if not 8 <= len(digits) <= 15:
+        raise RuleError(f"رقم {label} يجب أن يتكون من 8 إلى 15 رقماً.")
+    if (re.fullmatch(r"(\d)\1+", digits)
+            or re.search(r"(?:0123456789|1234567890|9876543210|0987654321)", digits)
+            or re.search(r"(\d)\1{6,}$", digits)):
+        raise RuleError(f"رقم {label} يبدو وهمياً. أدخل رقماً حقيقياً.")
+    return normalized
+
+
+def safe_email(value, required: bool = False) -> str:
+    raw = strip_control_chars(str(value if value is not None else "")).strip()
+    if not raw:
+        if required:
+            raise RuleError("البريد الإلكتروني مطلوب.")
+        return ""
+    email = raw.lower()
+    if (looks_malicious(email) or len(email) > 254 or ".." in email
+            or not EMAIL_RE.match(email)):
+        raise RuleError("صيغة البريد الإلكتروني غير صحيحة.")
+    return email
+
+
+ACCOUNT_NUMBER_RE = re.compile(r"^[A-Za-z0-9-]{3,40}$")
+IBAN_RE = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$")
+
+
+def safe_account_number(value, label: str = "رقم الحساب") -> str:
+    s = safe_text(value, label, 40).replace(" ", "")
+    if s and not ACCOUNT_NUMBER_RE.match(s):
+        raise RuleError(f"{label} البنكي غير صالح (3–40 حرفاً أو رقماً أو شرطة).")
+    return s
+
+
+def safe_iban(value) -> str:
+    s = safe_text(value, "الآيبان", 34).replace(" ", "").upper()
+    if s and not IBAN_RE.match(s):
+        raise RuleError("صيغة الآيبان غير صحيحة (حرفا دولة + رقمان ثم 11–30 حرفاً أو رقماً).")
+    return s

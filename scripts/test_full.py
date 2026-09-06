@@ -288,9 +288,9 @@ def build_scenario(conn) -> dict:
                           "date_to": "2026-12-31"})
     repo.save_year(conn, {"year": 2027, "date_from": "2027-01-01",
                           "date_to": "2027-12-31"})
-    ids["c1"] = repo.save_customer(conn, {"name": "عميل أول", "phone": "0555",
+    ids["c1"] = repo.save_customer(conn, {"name": "عميل أول", "phone": "0555123456",
                                           "address": "جدة", "opening_balance": 10000})
-    ids["c2"] = repo.save_customer(conn, {"name": "عميل ثانٍ", "phone": "0555000000",
+    ids["c2"] = repo.save_customer(conn, {"name": "عميل ثانٍ", "phone": "0555987654",
                                           "opening_balance": 0})
     ids["d1"] = repo.save_employee(conn, {"name": "سائق أحمد", "emp_type": "driver"})
     ids["d2"] = repo.save_employee(conn, {"name": "سائق خالد", "emp_type": "driver"})
@@ -568,11 +568,18 @@ def main() -> None:  # noqa: C901 — منظومة فحص
         expect_reject(f"نمط هجومي #{i} يُرفض عند الإدخال",
                       lambda p=p: repo.save_customer(conn, {
                           "name": p, "opening_balance": 0}))
-    # نصوص غريبة لكنها سليمة → تُخزن وتُسترجع كما هي (لا إفساد)
-    benign = ["%s%s%s", "\\\\", "null byte", "\u2014",
-              "\U0001f30d\U0001f69b", "شركة أ.ب.ج", "O'Brien"]
+    # نصوص غريبة لكنها تحوي حروفاً كافية → تُخزن وتُسترجع كما هي (لا إفساد)
+    benign = ["%s%s%s", "مؤسسة \\\\ للتجارة", "null byte مؤسسة",
+              "مؤسسة \u2014 للتجارة", "مؤسسة \U0001f30d\U0001f69b للنقل",
+              "شركة أ.ب.ج", "O'Brien"]
+    for label in ("\u2014", "\U0001f30d\U0001f69b", "\\\\", "test", "xxx",
+                  "123456", "أأأأ", "عميل"):
+        expect_reject(f"اسم غير معقول ({label}) يُرفض",
+                      lambda label=label: repo.save_customer(
+                          conn, {"name": label, "opening_balance": 0}))
     for i, p in enumerate(benign):
-        cid = repo.save_customer(conn, {"name": p, "phone": "0500000000",
+        cid = repo.save_customer(conn, {"name": p,
+                                        "phone": f"050{i}12{i}45{i}7",
                                         "address": "الرياض",
                                         "opening_balance": 0, "notes": "بيان"})
         saved = repo.get_customer(conn, cid)

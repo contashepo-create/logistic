@@ -77,7 +77,7 @@ def main() -> None:
     d = lambda day: f"{year}-{day}"  # noqa: E731
 
     cust = repo.save_customer(conn, {
-        "name": "مؤسسة الخليج", "phone": "0555111222", "address": "الرياض",
+        "name": "مؤسسة الخليج", "phone": "0555338877", "address": "الرياض",
         "opening_balance": 0, "tax_number": "310098765400003",
         "commercial_reg": "1010234567", "tax_status": "taxable",
         "country": "SA", "region": "الرياض", "city": "الرياض",
@@ -92,7 +92,7 @@ def main() -> None:
                                                    "commercial_reg": "12"}))
 
     driver = repo.save_employee(conn, {"name": "خالد السائق", "nationality": "سعودي",
-                                       "phone": "0500000001", "emp_type": "driver",
+                                       "phone": "0500445566", "emp_type": "driver",
                                        "base_salary": 4000, "notes": ""})
     check("الراتب الأساسي المسجّل للموظف",
           repo.get_employee(conn, driver)["base_salary"] == 4000)

@@ -41,6 +41,18 @@ class CustomerDialog(FormDialog):
         self.add_row("رقم الهاتف", self.phone_edit)
         self.address_edit = QLineEdit()
         self.add_row("العنوان", self.address_edit)
+        self.name_en_edit = QLineEdit()
+        self.add_row("الاسم بالإنجليزية", self.name_en_edit)
+        self.email_edit = QLineEdit()
+        self.add_row("البريد الإلكتروني", self.email_edit)
+        self.contact_edit = QLineEdit()
+        self.add_row("مسؤول التواصل", self.contact_edit)
+        self.credit_edit = AmountEdit(0)
+        self.add_row("الحد الائتماني", self.credit_edit)
+        self.terms_edit = QSpinBox()
+        self.terms_edit.setRange(0, 3650)
+        self.terms_edit.setSuffix(" يوم")
+        self.add_row("مهلة السداد", self.terms_edit)
         self.opening_edit = AmountEdit()
         self.add_row("الرصيد الافتتاحي", self.opening_edit)
         self.notes_edit = QPlainTextEdit()
@@ -101,6 +113,11 @@ class CustomerDialog(FormDialog):
                 self.opening_edit.set_value(c["opening_balance"])
                 self.notes_edit.setPlainText(c["notes"] or "")
                 self.balance_label.setText(fmt.money(calc.customer_balance(conn, customer_id)))
+                self.name_en_edit.setText(d.get("name_en") or "")
+                self.email_edit.setText(d.get("email") or "")
+                self.contact_edit.setText(d.get("contact_person") or "")
+                self.credit_edit.set_value(d.get("credit_limit") or 0)
+                self.terms_edit.setValue(int(d.get("payment_terms") or 0))
                 self.tax_number_edit.setText(d.get("tax_number") or "")
                 self.cr_edit.setText(d.get("commercial_reg") or "")
                 for combo, value in ((self.entity_combo, d.get("entity_type")),
@@ -123,6 +140,11 @@ class CustomerDialog(FormDialog):
             "name": _text(self.name_edit.text()),
             "phone": _text(self.phone_edit.text()),
             "address": _text(self.address_edit.text()),
+            "name_en": _text(self.name_en_edit.text()),
+            "email": _text(self.email_edit.text()),
+            "contact_person": _text(self.contact_edit.text()),
+            "credit_limit": self.credit_edit.value(),
+            "payment_terms": self.terms_edit.value(),
             "opening_balance": self.opening_edit.value(),
             "notes": self.notes_edit.toPlainText().strip(),
             "tax_number": _text(self.tax_number_edit.text()),

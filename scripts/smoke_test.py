@@ -63,13 +63,13 @@ def main() -> None:
 
     # ---------------- البيانات الأساسية ----------------
     cust = repo.save_customer(conn, {"name": "مؤسسة الرياض للتجارة",
-                                     "phone": "0555000111", "address": "الرياض",
+                                     "phone": "0555664422", "address": "الرياض",
                                      "opening_balance": 5000, "notes": ""})
     driver = repo.save_employee(conn, {"name": "أحمد السائق", "nationality": "سعودي",
-                                       "phone": "0500000001", "emp_type": "driver",
+                                       "phone": "0500445566", "emp_type": "driver",
                                        "notes": ""})
     admin = repo.save_employee(conn, {"name": "سالم الإداري", "nationality": "مصري",
-                                      "phone": "0500000002", "emp_type": "admin",
+                                      "phone": "0500778899", "emp_type": "admin",
                                       "notes": ""})
     veh = repo.save_vehicle(conn, {"plate_number": "أ ب ج 123", "vehicle_type": "تريلة",
                                    "default_driver_id": driver, "notes": ""})

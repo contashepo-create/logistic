@@ -388,10 +388,12 @@ def _add_accounts():
     b = AccountDialog("bank", win)
     b.name_edit.setText("بنك الفحص")
     b.accnum_edit.setText("ACC1")
-    b.iban_edit.setText("IBAN1")
+    b.iban_edit.setText("SA03 8000 0000 6080 1016 7519")
     b.opening_edit.set_value(5000)
     b.save()
-    assert conn.execute("SELECT COUNT(*) FROM banks WHERE iban='IBAN1'").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM banks WHERE iban='SA0380000000608010167519'"
+    ).fetchone()[0] == 1
 dlg_check("نافذتا خزينة/بنك: حفظ", _add_accounts)
 
 # سند قبض (كل الأنواع)
