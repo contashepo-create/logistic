@@ -135,7 +135,13 @@ def _bounded(value, field: str, low: float, high: float,
         raise RuleError(f"قيمة «{field}» غير صالحة.")
     if v < low or v > high:
         raise RuleError(f"«{field}» يجب أن تكون بين {low} و {high}.")
-    return int(round(v)) if as_int else round(v, 2)
+    if as_int:
+        # الويب يرفض الكسور في وضع العدد الصحيح ولا يقرّبها صامتاً:
+        # تقريب 12.5 إلى 12 في شهر الراتب أو مهلة السداد إخفاء لخطأ المستخدم.
+        if v != int(v):
+            raise RuleError(f"حقل «{field}» يجب أن يكون عدداً صحيحاً.")
+        return int(v)
+    return round(v, 2)
 
 
 def _round_money(value) -> float:
