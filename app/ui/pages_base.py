@@ -26,7 +26,7 @@ class CrudPage(QWidget):
         super().__init__(parent)
         self.frame = PageFrame(self.TITLE, self.SUBTITLE, self.ADD_TEXT)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.frame)
         if self.frame.add_btn:
             self.frame.add_btn.clicked.connect(self.on_add)

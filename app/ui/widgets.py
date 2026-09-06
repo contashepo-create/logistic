@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
 """
 الأدوات المشتركة للواجهة: الجداول الذكية (CRUD)، أشرطة التصدير والطباعة،
-حقول النماذج، نوافذ الإدخال، وقوائم الاختيار.
+حقول النماذج، نوافذ الإدخال، قوائم الاختيار، وبطاقات المؤشرات (KPI).
+
+كل الأبعاد هنا مضبوطة بحيث لا تُقتطع الأزرار داخل الجداول أو أشرطة الأدوات:
+  - عمود (العمليات) بعرض ثابت محسوب من عدد الأزرار.
+  - ارتفاع صفوف مريح (44px) يتسع لأزرار 32px كاملة.
+  - شريط الفلاتر يلتفّ تلقائياً (FlowLayout) بدل أن يغطي الأزرار.
 """
 from __future__ import annotations
 
 import sqlite3
 
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..core import calc
@@ -44,6 +50,106 @@ def error_msg(parent, text: str, title: str = "خطأ") -> None:
 
 
 # ---------------------------------------------------------------------------
+# مخطط التفاف أفقي (FlowLayout): يمنع تغطية/قصّ الأزرار عند ضيق المساحة
+# ---------------------------------------------------------------------------
+from PySide6.QtWidgets import QLayout, QLayoutItem  # noqa: E402
+
+
+def _app_is_rtl() -> bool:
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return True
+    return app.layoutDirection() == Qt.LayoutDirection.RightToLeft
+
+
+class FlowLayout(QLayout):
+    """شريط أدوات يلتف لسطر جديد تلقائياً بدل قصّ العناصر أو تغطيتها.
+
+    يُستخدم لأشرطة الفلاتر حتى تظهر كل الحقول والأزرار كاملة مهما كان
+    عرض النافذة (المشكلة القديمة: أزرار مغطاة بسبب التقسيم الخاطئ).
+    """
+
+    def __init__(self, parent: QWidget | None = None, margin: int = 0,
+                 spacing: int = 8):
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+
+    # -- واجهة QLayout -------------------------------------------------------
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
+    def add(self, w: QWidget) -> None:
+        self.addWidget(w)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i: int):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i: int):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return self._do_layout(QRect(0, 0, w, 0), test_only=True)
+
+    def setGeometry(self, rect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    # -- التوزيع (يدعم RTL: الرصف من اليمين إلى اليسار) ----------------------
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        m = self.contentsMargins()
+        rtl = _app_is_rtl()
+        left, top, right, bottom = m.left(), m.top(), m.right(), m.bottom()
+        x_start = rect.right() - right if rtl else rect.left() + left
+        x_limit = rect.left() + left if rtl else rect.right() - right
+        x, y, line_h = x_start, rect.top() + top, 0
+        spacing = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            item_x = (x - hint.width()) if rtl else x
+            next_x = (x - hint.width() - spacing) if rtl else (x + hint.width() + spacing)
+            wrapped = False
+            if rtl and next_x < x_limit and x < x_start:
+                wrapped = True
+            if not rtl and next_x - spacing > x_limit + 1 and x > x_start:
+                wrapped = True
+            if wrapped:
+                x = x_start
+                y += line_h + spacing
+                line_h = 0
+                item_x = x_start
+                next_x = (x - hint.width() - spacing) if rtl else (x + hint.width() + spacing)
+                item_x = (x_start - hint.width()) if rtl else x_start
+            if not test_only:
+                item.setGeometry(QRect(item_x, y, hint.width(), hint.height()))
+            x = next_x
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.top() + bottom
+
+
+# ---------------------------------------------------------------------------
 # حقول مخصصة
 # ---------------------------------------------------------------------------
 class VDateEdit(QDateEdit):
@@ -54,6 +160,8 @@ class VDateEdit(QDateEdit):
         self.setCalendarPopup(True)
         self.setDisplayFormat("yyyy-MM-dd")
         self.setDate(date or QDate.currentDate())
+        self.setMinimumWidth(118)
+        self.setFixedHeight(34)
 
     def iso(self) -> str:
         return self.date().toString("yyyy-MM-dd")
@@ -70,6 +178,7 @@ class AmountEdit(QLineEdit):
     def __init__(self, value: float = 0.0, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(34)
         self.set_value(value)
         self.setPlaceholderText("0.00")
 
@@ -90,6 +199,8 @@ class DictCombo(QComboBox):
         super().__init__(parent)
         self._ids: list = []
         self._placeholder = placeholder
+        self.setMinimumWidth(150)
+        self.setFixedHeight(34)
 
     def load(self, rows, mapper=None) -> None:
         """rows: قائمة sqlite3.Row أو dicts تحتوي id + حقل عرض."""
@@ -121,6 +232,8 @@ class AccountCombo(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._accounts: list[tuple[str, int, str, str]] = []
+        self.setMinimumWidth(170)
+        self.setFixedHeight(34)
 
     def load(self, conn: sqlite3.Connection) -> None:
         self.clear()
@@ -143,14 +256,53 @@ class AccountCombo(QComboBox):
 # ---------------------------------------------------------------------------
 # الأزرار الصفية والجدول الذكي
 # ---------------------------------------------------------------------------
+# عرض الزر الأيقوني داخل الجداول (بكسل)
+ROW_BTN_W, ROW_BTN_H = 34, 30
+# هوامش خلية العمليات + التباعد بين الأزرار
+ROW_CELL_PAD, ROW_BTN_GAP = 14, 6
+
+
+def row_actions_width(n_buttons: int) -> int:
+    """عرض عمود (العمليات) المحسوب بحيث تظهر كل الأزرار كاملة بلا قصّ."""
+    return ROW_CELL_PAD + n_buttons * ROW_BTN_W + max(0, n_buttons - 1) * ROW_BTN_GAP
+
+
 def _row_button(text: str, tooltip: str, obj: str, callback) -> QPushButton:
     b = QPushButton(text)
     b.setObjectName(obj)
     b.setToolTip(tooltip)
-    b.setFixedHeight(26)
+    b.setFixedSize(ROW_BTN_W, ROW_BTN_H)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     b.clicked.connect(callback)
     return b
+
+
+def install_row_actions(table: QTableWidget, column: int, n_buttons: int,
+                        scroll: bool = False) -> None:
+    """تثبيت عمود العمليات بعرض محسوب + ارتفاع صفوف يتسع للأزرار.
+
+    هذه هي المعالجة الجذرية لمشكلة (الأزرار لا تظهر بشكل كامل) — كان العمود
+    يتمدد عشوائياً وتُقتطع الأزرار، الآن لكل جدول عرض ثابت مضبوط.
+    """
+    header = table.horizontalHeader()
+    if column < table.columnCount():
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(column, row_actions_width(n_buttons))
+    table.verticalHeader().setDefaultSectionSize(44)
+    table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+
+
+def make_actions_widget(buttons: list[QPushButton]) -> QWidget:
+    """حاوية أزرار العمليات: موسّطة وغير قابلة للقصّ داخل خلية الجدول."""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 2, 0, 2)
+    lay.setSpacing(ROW_BTN_GAP)
+    lay.addStretch(1)
+    for b in buttons:
+        lay.addWidget(b)
+    lay.addStretch(1)
+    return w
 
 
 class DataTable(QTableWidget):
@@ -186,9 +338,19 @@ class DataTable(QTableWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWordWrap(False)
         header = self.horizontalHeader()
-        for c in range(len(cols) - 1):
+        header.setSectionsMovable(False)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setStretchLastSection(False)
+        n_data = len(self._headers)
+        for c in range(n_data):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(len(cols) - 1, QHeaderView.ResizeMode.Stretch)
+        # آخر عمود بيانات يتمدد ليملأ العرض المتاح (شكل متوازن)
+        if n_data:
+            header.setSectionResizeMode(n_data - 1, QHeaderView.ResizeMode.Stretch)
+        # عمود العمليات: عرض ثابت محسوب — الأزرار كاملة دائماً
+        if self._actions or self._extra:
+            n_buttons = len(self._actions) + len(self._extra)
+            install_row_actions(self, n_data, n_buttons)
         self.doubleClicked.connect(self._on_double)
 
     # -- تعبئة البيانات ------------------------------------------------------
@@ -197,6 +359,7 @@ class DataTable(QTableWidget):
         self._rows = [list(r) for r in rows]
         self.setRowCount(len(rows))
         for r, row in enumerate(rows):
+            self.setRowHeight(r, 44)
             for c, val in enumerate(row):
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -207,25 +370,25 @@ class DataTable(QTableWidget):
             self.selectRow(0)
 
     def _actions_widget(self, rid) -> QWidget:
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(2, 1, 2, 1)
-        lay.setSpacing(3)
-        lay.addStretch(1)
+        buttons: list[QPushButton] = []
         if "view" in self._actions:
-            lay.addWidget(_row_button("👁️", "عرض", "rowBtn",
-                                      lambda _=False, x=rid: self.viewRequested.emit(x)))
+            buttons.append(_row_button(
+                "👁", "عرض", "rowBtn",
+                lambda _=False, x=rid: self.viewRequested.emit(x)))
         if "edit" in self._actions:
-            lay.addWidget(_row_button("✏️", "تعديل", "rowBtn",
-                                      lambda _=False, x=rid: self.editRequested.emit(x)))
+            buttons.append(_row_button(
+                "✏", "تعديل", "rowBtnEdit",
+                lambda _=False, x=rid: self.editRequested.emit(x)))
         for key, text, tip in self._extra:
-            lay.addWidget(_row_button(
-                text, tip, "rowBtn",
+            variant = "rowBtnPrint" if "🖨" in text else "rowBtnExtra"
+            buttons.append(_row_button(
+                text, tip, variant,
                 lambda _=False, x=rid, k=key: self.extraRequested.emit(x, k)))
         if "delete" in self._actions:
-            lay.addWidget(_row_button("🗑️", "حذف", "rowBtnDanger",
-                                      lambda _=False, x=rid: self.deleteRequested.emit(x)))
-        return w
+            buttons.append(_row_button(
+                "🗑", "حذف", "rowBtnDanger",
+                lambda _=False, x=rid: self.deleteRequested.emit(x)))
+        return make_actions_widget(buttons)
 
     def _on_double(self, index) -> None:
         rid = self._ids[index.row()] if index.row() < len(self._ids) else None
@@ -254,13 +417,19 @@ class PlainTable(QTableWidget):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setAlternatingRowColors(True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWordWrap(False)
         header = self.horizontalHeader()
+        header.setSectionsMovable(False)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setStretchLastSection(True)
         for c in range(len(headers)):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.verticalHeader().setDefaultSectionSize(42)
 
     def set_rows(self, rows: list[list], bold_last: bool = False) -> None:
         self.setRowCount(len(rows))
         for r, row in enumerate(rows):
+            self.setRowHeight(r, 42)
             is_last_bold = bold_last and r == len(rows) - 1
             for c, val in enumerate(row):
                 item = QTableWidgetItem(str(val))
@@ -269,6 +438,11 @@ class PlainTable(QTableWidget):
                 f.setBold(is_last_bold)
                 item.setFont(f)
                 self.setItem(r, c, item)
+        if bold_last and rows:
+            for c in range(self.columnCount()):
+                it = self.item(self.rowCount() - 1, c)
+                if it is not None:
+                    it.setBackground(Qt.GlobalColor.white)
 
     def export_data(self) -> tuple[list[str], list[list]]:
         rows = []
@@ -282,70 +456,94 @@ class PlainTable(QTableWidget):
 # شريط التصدير / الطباعة + إطار الصفحة
 # ---------------------------------------------------------------------------
 class ExportBar(QWidget):
-    """أزرار (Excel / PDF / طباعة) الموحدة لكل الشاشات."""
+    """أزرار (Excel / PDF / طباعة) الموحدة لكل الشاشات — داخل مجموعة أنيقة."""
     excelClicked = Signal()
     pdfClicked = Signal()
     printClicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        group = QFrame()
+        group.setObjectName("exportGroup")
+        lay = QHBoxLayout(group)
+        lay.setContentsMargins(4, 3, 4, 3)
+        lay.setSpacing(2)
         b = QPushButton("📊 Excel")
+        b.setObjectName("btnExcel")
         b.setToolTip("تصدير إلى ملف Excel")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(self.excelClicked.emit)
         lay.addWidget(b)
         b = QPushButton("📄 PDF")
-        b.setToolTip("تصدير إلى ملف PDF")
+        b.setObjectName("btnPdf")
+        b.setToolTip("تصدير إلى PDF")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(self.pdfClicked.emit)
         lay.addWidget(b)
         b = QPushButton("🖨️ طباعة")
+        b.setObjectName("btnPrint")
         b.setToolTip("طباعة بتنسيق احترافي")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(self.printClicked.emit)
         lay.addWidget(b)
 
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
+
 
 class PageFrame(QWidget):
-    """إطار صفحة موحد: عنوان + وصف + شريط أدوات (إضافة/بحث/تصدير)."""
+    """إطار صفحة موحد: ترويسة بعنوان بارز + شريط أدوات (إضافة/بحث/تصدير)."""
 
     def __init__(self, title: str, subtitle: str = "", add_text: str = "➕ إضافة",
                  show_add: bool = True, show_search: bool = True, parent=None):
         super().__init__(parent)
         self.setObjectName("page")
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(12)
 
-        head = QVBoxLayout()
-        head.setSpacing(2)
+        # الترويسة: شريط لوني + عنوان ووصف
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        accent = QFrame()
+        accent.setObjectName("titleAccent")
+        accent.setFixedSize(6, 46)
+        head.addWidget(accent, 0, Qt.AlignmentFlag.AlignVCenter)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
         t = QLabel(title)
         t.setObjectName("pageTitle")
-        head.addWidget(t)
+        titles.addWidget(t)
         self.title_label = t
         s = QLabel(subtitle)
         s.setObjectName("pageSub")
         if subtitle:
-            head.addWidget(s)
+            titles.addWidget(s)
         else:
             s.hide()
         self.sub_label = s
+        head.addLayout(titles, 1)
         root.addLayout(head)
 
+        # شريط الأدوات: إضافة + بحث ... تصدير
         bar = QHBoxLayout()
-        bar.setSpacing(8)
+        bar.setSpacing(10)
         self.add_btn: QPushButton | None = None
         if show_add:
             self.add_btn = QPushButton(add_text)
             self.add_btn.setObjectName("primary")
             self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.add_btn.setFixedHeight(40)
             bar.addWidget(self.add_btn)
         self.search_edit: QLineEdit | None = None
         if show_search:
             self.search_edit = QLineEdit()
-            self.search_edit.setPlaceholderText("🔍 بحث سريع...")
+            self.search_edit.setPlaceholderText("🔍  بحث سريع في الجدول...")
             self.search_edit.setClearButtonEnabled(True)
-            self.search_edit.setMaximumWidth(260)
+            self.search_edit.setFixedHeight(40)
+            self.search_edit.setMinimumWidth(170)
+            self.search_edit.setMaximumWidth(300)
             bar.addWidget(self.search_edit)
         bar.addStretch(1)
         self.export_bar = ExportBar()
@@ -371,34 +569,55 @@ class PageFrame(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# شريط الإجماليات (بطاقات)
+# شريط الإجماليات — بطاقات مؤشرات (KPI) حديثة
 # ---------------------------------------------------------------------------
+KPI_ACCENTS = ["#4f46e5", "#0e9f6e", "#7c3aed", "#d97706", "#e02424",
+               "#0e7490", "#c026d3"]
+
+
+def add_shadow(widget, blur: int = 16, alpha: int = 30, dy: int = 2) -> None:
+    """ظل ناعم حول البطاقات (QSS لا يدعم box-shadow في كيوت)."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+
+    eff = QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(blur)
+    eff.setOffset(0, dy)
+    eff.setColor(QColor(17, 24, 39, alpha))
+    widget.setGraphicsEffect(eff)
+
+
 class TotalsBar(QWidget):
-    """بطاقات إجماليات أسفل الشاشة."""
+    """بطاقات إجماليات (KPI): عنوان صغير خافت + قيمة كبيرة بارزة + ظل ناعم."""
 
     def __init__(self, labels: list[str], parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(12)
         self._values: dict[str, QLabel] = {}
-        for text in labels:
-            box = QVBoxLayout()
-            box.setSpacing(0)
-            card = QLabel(text)
-            card.setObjectName("totalCard")
-            card.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._accents: dict[str, str] = {}
+        for i, text in enumerate(labels):
+            card = QFrame()
+            card.setObjectName("kpiCard")
+            add_shadow(card, blur=14, alpha=26, dy=2)
+            box = QVBoxLayout(card)
+            box.setContentsMargins(14, 10, 14, 10)
+            box.setSpacing(4)
+            caption = QLabel(text)
+            caption.setObjectName("kpiCaption")
+            caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            caption.setWordWrap(True)
             value = QLabel("0.00")
-            value.setObjectName("totalValue")
+            value.setObjectName("kpiValue")
             value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            value.setStyleSheet("background:#f0f5fa; border:1px solid #d7dde5;"
-                                "border-radius:8px; padding:2px 14px 8px 14px;")
-            box.addWidget(card, 0, Qt.AlignmentFlag.AlignTop)
-            box.addWidget(value, 0, Qt.AlignmentFlag.AlignTop)
-            wrap = QWidget()
-            wrap.setLayout(box)
-            lay.addWidget(wrap, 1)
+            accent = KPI_ACCENTS[i % len(KPI_ACCENTS)]
+            value.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
+            box.addWidget(caption)
+            box.addWidget(value)
+            lay.addWidget(card, 1)
             self._values[text] = value
+            self._accents[text] = accent
 
     def set_value(self, label: str, value, money: bool = True) -> None:
         v = self._values.get(label)
@@ -406,47 +625,60 @@ class TotalsBar(QWidget):
             return
         text = fmt.money(value) if money else str(value)
         v.setText(text)
+        accent = self._accents.get(label, "#4f46e5")
         try:
-            v.setObjectName("totalValueNeg" if float(value or 0) < 0 else "totalValue")
+            negative = float(value or 0) < 0
         except (TypeError, ValueError):
-            v.setObjectName("totalValue")
-        v.setStyleSheet(
-            ("background:#fdeef0; border:1px solid #e3b6bb;" if v.objectName() == "totalValueNeg"
-             else "background:#f0f5fa; border:1px solid #d7dde5;") +
-            "border-radius:8px; padding:2px 14px 8px 14px;" +
-            ("color:#b02a37;" if v.objectName() == "totalValueNeg"
-             else "color:#1f4e79;") + "font-size:13pt; font-weight:bold;")
+            negative = False
+        if negative:
+            accent = "#e02424"
+        v.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
 
 
 # ---------------------------------------------------------------------------
 # نافذة نموذج موحدة (إضافة/تعديل/عرض)
 # ---------------------------------------------------------------------------
 class FormDialog(QDialog):
-    """نافذة إدخال: نموذج يمين + أزرار حفظ/إلغاء. تدعم وضع القراءة فقط."""
+    """نافذة إدخال: ترويسة أنيقة + نموذج يمين + أزرار حفظ/إلغاء."""
 
     def __init__(self, parent=None, title: str = "", read_only: bool = False,
-                 width: int = 520):
+                 width: int = 540):
         super().__init__(parent)
         self.read_only = read_only
         self.setWindowTitle(title)
         self.setMinimumWidth(width)
         self.setSizeGripEnabled(True)
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        accent = QFrame()
+        accent.setObjectName("titleAccent")
+        accent.setFixedSize(5, 34)
+        head.addWidget(accent, 0, Qt.AlignmentFlag.AlignVCenter)
+        t = QLabel(title)
+        t.setObjectName("dialogTitle")
+        head.addWidget(t, 1)
+        root.addLayout(head)
 
         self.form = QFormLayout()
         self.form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.form.setHorizontalSpacing(14)
+        self.form.setVerticalSpacing(10)
         root.addLayout(self.form, 1)
 
         self.buttons = QDialogButtonBox()
         if read_only:
             self.buttons.addButton("إغلاق", QDialogButtonBox.ButtonRole.RejectRole)
         else:
-            save = self.buttons.addButton("💾 حفظ", QDialogButtonBox.ButtonRole.AcceptRole)
+            save = self.buttons.addButton("💾 حفظ",
+                                          QDialogButtonBox.ButtonRole.AcceptRole)
             save.setObjectName("primary")
+            save.setMinimumHeight(38)
             self.buttons.addButton("إلغاء", QDialogButtonBox.ButtonRole.RejectRole)
         self.buttons.accepted.connect(self._try_save)
         self.buttons.rejected.connect(self.reject)

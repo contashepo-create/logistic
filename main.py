@@ -2,17 +2,37 @@
 """نقطة إقلاع التطبيق: python main.py"""
 from __future__ import annotations
 
+import os
 import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
 
-from app import APP_TITLE
-from app.core import db
-from app.ui.theme import apply_theme
+def _hide_windows_console() -> None:
+    """إخفاء نافذة الكونسول السوداء عند تشغيل التطبيق على ويندوز.
+
+    تظهر هذه النافذة عند فتح main.py بالنقر المزدوج (يخصص بايثون لنفسه
+    كونسولاً جديداً) فتبدو كنافذة إضافية مفتوحة بجانب الواجهة.
+    - ضع LOGISTIC_KEEP_CONSOLE=1 لإبقاؤها (مفيد للتشخيص).
+    - لا تأثير لها على لينكس/ماك، ولا على كونسول طرفية مفتوحة مسبقاً.
+    """
+    if os.name != "nt" or os.environ.get("LOGISTIC_KEEP_CONSOLE"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:  # noqa: BLE001 — إخفاء الكونسول تحسيل لا يعطل التطبيق
+        pass
 
 
 def main() -> int:
+    _hide_windows_console()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from app import APP_TITLE
+    from app.core import db
+    from app.ui.theme import apply_theme
+
     db.init_db()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)

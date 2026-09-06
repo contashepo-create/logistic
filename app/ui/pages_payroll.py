@@ -29,7 +29,8 @@ class PayrollPage(CrudPage):
              "طريقة الصرف", "الأساسي", "الإضافات", "خصم السلف",
              "خصومات أخرى", "الصافي المنصرف"]))
         self.totals = TotalsBar(["إجمالي الرواتب المنصرفة (الصافي)"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):

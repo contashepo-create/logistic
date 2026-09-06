@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-"""صفحة إعدادات النظام: بيانات الشركة (ترويسة الطباعة) ومعلومات قاعدة البيانات."""
+"""صفحة إعدادات النظام: بيانات الشركة (ترويسة الطباعة) ومعلومات قاعدة البيانات.
+
+المحتوى داخل منطقة تمرير رأسية: الصفحة طويلة بطبيعتها، وبدون التمرير كانت
+ترفع الحد الأدنى لارتفاع النافذة كلها إلى ~2000px فتظهر فراغات ضخمة
+في بقية الشاشات ويختفي أسفل الجداول.
+"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE, __version__
@@ -21,8 +26,14 @@ class SettingsPage(QWidget):
                                "بيانات الشركة تظهر في ترويسة كل التقارير والفواتير",
                                show_add=False, show_search=False)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.addWidget(self.frame)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.frame.setMinimumWidth(640)
+        scroll.setWidget(self.frame)
+        outer.addWidget(scroll)
 
         conn = db.get_conn()
         box = QGroupBox("بيانات الشركة")

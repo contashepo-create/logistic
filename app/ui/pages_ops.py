@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+)
 
 from ..core import calc, db, repo
 from ..utils import fmt
@@ -15,39 +18,78 @@ from .dialogs_ops import (
 )
 from .pages_base import CrudPage
 from .widgets import (
-    DataTable, DictCombo, TotalsBar, VDateEdit, confirm, warn,
+    DataTable, DictCombo, FlowLayout, TotalsBar, VDateEdit, add_shadow,
+    confirm, warn,
 )
 
 
 class FilterRow(QWidget):
-    """صف فلاتر موحد: من تاريخ / إلى تاريخ / فلاتر إضافية / زر عرض."""
+    """صف فلاتر موحد داخل بطاقة ناعمة يلتف تلقائياً — لا تُغطى الأزرار أبداً.
+
+    من تاريخ / إلى تاريخ / فلاتر إضافية / زر عرض.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(0, 4, 0, 4)
-        self._lay.setSpacing(8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card = QFrame()
+        card.setObjectName("filterCard")
+        self.card = card
+        self._lay = FlowLayout(margin=0, spacing=10)
+        card.setLayout(self._lay)
+        card.setStyleSheet("#filterCard { padding: 10px 14px; }")
+        add_shadow(card, blur=12, alpha=20, dy=1)
+        outer.addWidget(card)
+
         self.from_edit = VDateEdit()
         self.from_edit.set_iso(f"{date.today().year}-01-01")
         self.to_edit = VDateEdit()
-        self._lay.addWidget(QLabel("من تاريخ"))
-        self._lay.addWidget(self.from_edit)
-        self._lay.addWidget(QLabel("إلى تاريخ"))
-        self._lay.addWidget(self.to_edit)
-        self.refresh_btn = QPushButton("🔄 عرض")
+        self.refresh_btn = QPushButton("🔄  عرض")
         self.refresh_btn.setObjectName("primary")
-        self._lay.addWidget(self.refresh_btn)
-        self._lay.addStretch(1)
+        self.refresh_btn.setFixedHeight(36)
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        # ترتيب العناصر: [من تاريخ، إلى تاريخ، فلاتر إضافية...، زر العرض]
+        self._pairs: list[QWidget] = [
+            self._pair("من تاريخ", self.from_edit),
+            self._pair("إلى تاريخ", self.to_edit),
+        ]
+        self._rebuild()
+
+    # ------------------------------------------------------------------
+    def _pair(self, label: str, widget: QWidget) -> QWidget:
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        lab = QLabel(label)
+        lab.setObjectName("filterLabel")
+        h.addWidget(lab)
+        h.addWidget(widget)
+        return wrap
+
+    def _rebuild(self) -> None:
+        """إعادة ترتيب عناصر الفلتر مع بقاء زر العرض في النهاية."""
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            if item and item.widget():
+                item.widget().setParent(self.card)
+        for pair in self._pairs:
+            self._lay.add(pair)
+        self._lay.add(self.refresh_btn)
 
     def add_filter(self, label: str, widget: QWidget) -> QWidget:
         """إضافة فلتر إضافي قبل زر العرض."""
-        self._lay.insertWidget(self._lay.count() - 2, QLabel(label))
-        self._lay.insertWidget(self._lay.count() - 2, widget)
+        self._pairs.append(self._pair(label, widget))
+        self._rebuild()
         return widget
 
     def add_combo(self, label: str, items: list[tuple],
                   placeholder: str = "الكل") -> QComboBox:
         combo = QComboBox()
+        combo.setFixedHeight(34)
+        combo.setMinimumWidth(150)
         combo.addItem(placeholder, None)
         for value, text in items:
             combo.addItem(text, value)
@@ -82,10 +124,8 @@ class InvoicesPage(CrudPage):
         ))
         self.totals = TotalsBar(["إجمالي النقلات", "إجمالي المصروفات المباشرة",
                                  "إجمالي الأرباح الفعلية"])
-        wrap = QWidget()
-        wrap.setLayout(QHBoxLayout())
-        wrap.layout().addWidget(self.totals)
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):
@@ -172,7 +212,8 @@ class ReceiptsPage(CrudPage):
             ["رقم السند", "التاريخ", "النوع", "العميل / المصدر", "أودع في",
              "المبلغ", "البيان"]))
         self.totals = TotalsBar(["إجمالي المقبوضات", "تحصيل من عملاء", "إيرادات أخرى"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):
@@ -244,7 +285,8 @@ class PaymentsPage(CrudPage):
         self.set_table(DataTable(
             ["رقم السند", "التاريخ", "النوع", "التوجيه", "صرف من", "المبلغ", "البيان"]))
         self.totals = TotalsBar(["إجمالي المدفوعات"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):

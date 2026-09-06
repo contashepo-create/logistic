@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""النافذة الرئيسية: شريط تنقل جانبي (عربي RTL) + مكدس الصفحات + شريط الحالة."""
+"""النافذة الرئيسية: شريط تنقل جانبي حديث (عربي RTL) + شريط علوي +
+مكدس الصفحات + شريط الحالة."""
 from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE, __version__
@@ -26,31 +27,58 @@ from .pages_suppliers import (
 )
 from .pages_treasury import BanksPage, CashboxesPage
 
+# أيقونة كل صفحة في الشريط الجانبي
+NAV_ICONS = {
+    "العملاء": "👥",
+    "الموردون": "🏭",
+    "الموظفون والسائقون": "🧑‍🔧",
+    "السيارات": "🚚",
+    "السنوات المالية": "🗓️",
+    "الخزائن": "💵",
+    "البنوك": "🏦",
+    "فواتير النقل": "🧾",
+    "فواتير المشتريات": "📦",
+    "سندات القبض": "📥",
+    "سندات الدفع": "📤",
+    "إشعارات مدين/دائن": "🔁",
+    "إدارة الرواتب": "💼",
+    "متابعة السلفيات": "⏳",
+    "الخصومات": "✂️",
+    "أرباح الفواتير والرحلات": "📈",
+    "كشف حساب عميل": "📄",
+    "كشف حساب مورّد": "🧾",
+    "أعمار الديون": "⏰",
+    "كشف حساب موظف/سائق": "👤",
+    "أداء السيارات": "🚛",
+    "الأرباح والخسائر (P&L)": "📊",
+    "الإعدادات": "⚙️",
+}
+
 NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
-    ("📁 البيانات الأساسية", [
+    ("البيانات الأساسية", [
         ("العملاء", CustomersPage),
         ("الموردون", SuppliersPage),
         ("الموظفون والسائقون", EmployeesPage),
         ("السيارات", VehiclesPage),
         ("السنوات المالية", YearsPage),
     ]),
-    ("🏦 الخزائن والبنوك", [
+    ("الخزائن والبنوك", [
         ("الخزائن", CashboxesPage),
         ("البنوك", BanksPage),
     ]),
-    ("🔄 العمليات اليومية", [
+    ("العمليات اليومية", [
         ("فواتير النقل", InvoicesPage),
         ("فواتير المشتريات", PurchasesPage),
         ("سندات القبض", ReceiptsPage),
         ("سندات الدفع", PaymentsPage),
         ("إشعارات مدين/دائن", NotesPage),
     ]),
-    ("💰 الرواتب", [
+    ("الرواتب", [
         ("إدارة الرواتب", PayrollPage),
         ("متابعة السلفيات", AdvancesPage),
         ("الخصومات", DeductionsPage),
     ]),
-    ("📊 التقارير الذكية", [
+    ("التقارير الذكية", [
         ("أرباح الفواتير والرحلات", TripProfitsReportPage),
         ("كشف حساب عميل", CustomerStatementReportPage),
         ("كشف حساب مورّد", SupplierStatementReportPage),
@@ -59,17 +87,20 @@ NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
         ("أداء السيارات", VehiclesReportPage),
         ("الأرباح والخسائر (P&L)", PnlReportPage),
     ]),
-    ("⚙️ النظام", [
+    ("النظام", [
         ("الإعدادات", SettingsPage),
     ]),
 ]
+
+SIDEBAR_WIDTH = 268
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} — v{__version__}")
-        self.resize(1280, 780)
+        self._fit_window_to_screen()
+        self.setMinimumSize(1024, 620)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -77,28 +108,55 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # شريط التنقل
-        nav_widget = QWidget()
-        nav_widget.setObjectName("nav")
-        nav_widget.setFixedWidth(240)
+        # ================= الشريط الجانبي =================
+        nav_widget = QFrame()
+        nav_widget.setObjectName("sidebar")
+        nav_widget.setFixedWidth(SIDEBAR_WIDTH)
         nav = QVBoxLayout(nav_widget)
-        nav.setContentsMargins(8, 10, 8, 10)
-        nav.setSpacing(2)
-        brand = QLabel("🚛 النظام المحاسبي\nلشركة النقل")
-        brand.setStyleSheet("color: white; font-size: 13pt; font-weight: bold; "
-                            "padding: 8px 6px 14px 6px;")
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nav.addWidget(brand)
+        nav.setContentsMargins(14, 16, 14, 14)
+        nav.setSpacing(10)
+
+        # الهوية (الشعار + الاسم)
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        badge = QLabel("🚚")
+        badge.setObjectName("brandBadge")
+        badge.setFixedSize(44, 44)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.addWidget(badge)
+        brand_texts = QVBoxLayout()
+        brand_texts.setSpacing(0)
+        bname = QLabel("النظام المحاسبي")
+        bname.setObjectName("brandName")
+        bsub = QLabel(f"لشركة النقل  •  v{__version__}")
+        bsub.setObjectName("brandSub")
+        brand_texts.addWidget(bname)
+        brand_texts.addWidget(bsub)
+        brand.addLayout(brand_texts, 1)
+        nav.addLayout(brand)
+
+        sep = QFrame()
+        sep.setObjectName("navSeparator")
+        sep.setFixedHeight(1)
+        nav.addWidget(sep)
+
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("nav")
+        self.nav_list.setVerticalScrollMode(
+            QListWidget.ScrollMode.ScrollPerPixel)
+        self.nav_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.stack = QStackedWidget()
         self._pages: list[tuple[str, QWidget]] = []
         for section, items in NAV_SECTIONS:
-            hdr = QListWidgetItem(section)
+            hdr = QListWidgetItem("  " + section)
             hdr.setFlags(Qt.ItemFlag.NoItemFlags)
+            hdr.setSizeHint(QSize(SIDEBAR_WIDTH, 26))
             self.nav_list.addItem(hdr)
             for label, page_cls in items:
-                item = QListWidgetItem(label)
+                icon = NAV_ICONS.get(label, "•")
+                item = QListWidgetItem(f"{icon}   {label}")
+                item.setSizeHint(QSize(SIDEBAR_WIDTH, 40))
                 self.nav_list.addItem(item)
                 try:
                     page = page_cls()
@@ -117,14 +175,61 @@ class MainWindow(QMainWindow):
         self.nav_list.currentRowChanged.connect(self._nav_changed)
         nav.addWidget(self.nav_list, 1)
 
-        year_info = QLabel("")
-        year_info.setStyleSheet("color:#8ba3bc; font-size:9pt; padding:6px")
-        year_info.setWordWrap(True)
-        nav.addWidget(year_info)
-        self.year_info = year_info
+        # بطاقة حالة السنة المالية أسفل الشريط
+        footer = QFrame()
+        footer.setObjectName("navFooter")
+        flay = QVBoxLayout(footer)
+        flay.setContentsMargins(14, 10, 14, 10)
+        flay.setSpacing(2)
+        ftitle = QLabel("السنوات المالية المفتوحة")
+        ftitle.setObjectName("navFooterTitle")
+        self.year_info = QLabel("—")
+        self.year_info.setObjectName("navFooterValue")
+        self.year_info.setWordWrap(True)
+        flay.addWidget(ftitle)
+        flay.addWidget(self.year_info)
+        nav.addWidget(footer)
 
         root.addWidget(nav_widget)
-        root.addWidget(self.stack, 1)
+
+        # ================= منطقة المحتوى =================
+        content = QVBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+
+        # الشريط العلوي: عنوان الصفحة الحالية + شرائح معلومات
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        topbar.setFixedHeight(62)
+        tlay = QHBoxLayout(topbar)
+        tlay.setContentsMargins(24, 8, 24, 8)
+        tlay.setSpacing(10)
+        self.topbar_icon = QLabel("👥")
+        self.topbar_icon.setStyleSheet("font-size: 14pt; background: transparent;")
+        self.topbar_title = QLabel("العملاء")
+        self.topbar_title.setObjectName("topbarTitle")
+        tlay.addWidget(self.topbar_icon)
+        tlay.addWidget(self.topbar_title)
+        tlay.addStretch(1)
+        date_chip = QLabel("📅  " + date.today().strftime("%Y-%m-%d"))
+        date_chip.setObjectName("chip")
+        tlay.addWidget(date_chip)
+        self.year_chip = QLabel("")
+        self.year_chip.setObjectName("chipAccent")
+        tlay.addWidget(self.year_chip)
+        content.addWidget(topbar)
+
+        # حاشية حول الصفحات لتتنفس على الخلفية
+        pages_wrap = QWidget()
+        pages_wrap.setStyleSheet("background: transparent;")
+        pw = QHBoxLayout(pages_wrap)
+        pw.setContentsMargins(18, 16, 18, 14)
+        pw.addWidget(self.stack, 1)
+        content.addWidget(pages_wrap, 1)
+
+        root_widget = QWidget()
+        root_widget.setLayout(content)
+        root.addWidget(root_widget, 1)
 
         self.statusBar().showMessage(
             f"قاعدة البيانات: {db.db_path()}   |   الإصدار {__version__}")
@@ -141,6 +246,17 @@ class MainWindow(QMainWindow):
                 self.telegram_bot = bot
         except Exception:  # noqa: BLE001
             self.telegram_bot = None
+
+    def _fit_window_to_screen(self) -> None:
+        """حجم افتتاحي مناسب لا يتجاوز الشاشة (مع مراعاة شريط المهام)."""
+        from PySide6.QtWidgets import QApplication
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            self.resize(min(1360, avail.width()),
+                        min(800, avail.height()))
+        except Exception:  # noqa: BLE001
+            self.resize(1280, 760)
 
     def closeEvent(self, event) -> None:
         """إيقاف خيط البوت قبل الإغلاق حتى لا يبقى معلقاً."""
@@ -161,7 +277,10 @@ class MainWindow(QMainWindow):
         if page_index is None:
             return
         self.stack.setCurrentIndex(page_index)
-        page = self._pages[page_index][1]
+        label, page = self._pages[page_index]
+        icon = NAV_ICONS.get(label, "")
+        self.topbar_icon.setText(icon)
+        self.topbar_title.setText(label)
         if hasattr(page, "refresh"):
             try:
                 page.refresh()
@@ -184,8 +303,9 @@ class MainWindow(QMainWindow):
         conn = db.get_conn()
         years = repo.list_years(conn)
         open_list = [str(y["year"]) for y in years if y["status"] == "open"]
-        text = "السنوات المفتوحة: " + ("، ".join(open_list) if open_list else "لا يوجد ⚠️")
+        text = "، ".join(open_list) if open_list else "لا توجد ⚠️"
         self.year_info.setText(text)
+        self.year_chip.setText("🗓️  سنة مفتوحة: " + (open_list[0] if open_list else "—"))
 
     def _first_run_check(self) -> None:
         conn = db.get_conn()
