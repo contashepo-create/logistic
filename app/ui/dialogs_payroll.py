@@ -16,7 +16,7 @@ from ..core.rules import RuleError
 from ..utils import fmt
 from ..utils.fmt import MONTHS_AR
 from .widgets import (
-    AccountCombo, AmountEdit, DictCombo, VDateEdit, _row_button, error_msg, warn,
+    AccountCombo, AmountEdit, DictCombo, VDateEdit, error_msg, warn
 )
 
 
@@ -45,7 +45,7 @@ class PayrollDialog(QDialog):
         hf.addRow("تاريخ الصرف *", self.date_edit)
         self.employee_combo = DictCombo()
         self.employee_combo.load(repo.list_employees(conn))
-        self.employee_combo.currentIndexChanged.connect(self._reload_advances)
+        self.employee_combo.currentIndexChanged.connect(self._reload_employee_data)
         hf.addRow("الموظف / السائق *", self.employee_combo)
         pbox = QWidget()
         pl = QHBoxLayout(pbox)
@@ -109,6 +109,23 @@ class PayrollDialog(QDialog):
         av.addWidget(self.adv_total_label)
         root.addWidget(adv_box, 1)
 
+        ded_box = QGroupBox("بنود الخصومات المُتتبَّعة (تلقائي) — خصم كلي أو جزئي")
+        dv = QVBoxLayout(ded_box)
+        self.ded_table = QTableWidget(0, 6)
+        self.ded_table.setHorizontalHeaderLabels(
+            ["رقم البند", "تاريخه", "السبب", "المبلغ", "المتبقي", "الخصم الآن"])
+        self.ded_table.verticalHeader().setVisible(False)
+        self.ded_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ded_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.ded_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.ded_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        dv.addWidget(self.ded_table)
+        self.ded_total_label = QLabel("إجمالي خصم الخصومات: 0.00")
+        self.ded_total_label.setObjectName("sectionLabel")
+        dv.addWidget(self.ded_total_label)
+        root.addWidget(ded_box, 1)
+
         btns = QHBoxLayout()
         btns.addStretch(1)
         if read_only:
@@ -132,6 +149,7 @@ class PayrollDialog(QDialog):
             self.load(conn, payroll_id)
         else:
             self._reload_advances()
+            self._reload_deductions()
         if read_only:
             self.lock()
 
@@ -153,6 +171,7 @@ class PayrollDialog(QDialog):
         self.other_ded_edit.set_value(p["other_deductions"])
         self.notes_edit.setPlainText(p["notes"] or "")
         self._reload_advances(preserved=settlement_map(p))
+        self._reload_deductions(preserved=deduction_settlement_map(p))
 
     def lock(self) -> None:
         for w in self.findChildren(QComboBox):
@@ -165,15 +184,16 @@ class PayrollDialog(QDialog):
         self.additions_edit.setReadOnly(True)
         self.other_ded_edit.setReadOnly(True)
         self.notes_edit.setReadOnly(True)
-        for r in range(self.adv_table.rowCount()):
-            w = self.adv_table.cellWidget(r, 5)
-            if w is None:
-                continue
-            if isinstance(w, QDoubleSpinBox):
-                w.setEnabled(False)
-            else:
-                for sb in w.findChildren(QDoubleSpinBox):
-                    sb.setEnabled(False)
+        for table in (self.adv_table, self.ded_table):
+            for r in range(table.rowCount()):
+                w = table.cellWidget(r, 5)
+                if w is None:
+                    continue
+                if isinstance(w, QDoubleSpinBox):
+                    w.setEnabled(False)
+                else:
+                    for sb in w.findChildren(QDoubleSpinBox):
+                        sb.setEnabled(False)
 
     # ------------------------------------------------------------------
     def _reload_advances(self, *_args, preserved: dict | None = None) -> None:
@@ -222,12 +242,63 @@ class PayrollDialog(QDialog):
                     total += sb.value()
         return round(total, 2)
 
+    # ---- بنود الخصومات المُتتبَّعة ----
+    def _reload_employee_data(self, *_args) -> None:
+        self._reload_advances()
+        self._reload_deductions()
+
+    def _reload_deductions(self, *_args, preserved: dict | None = None) -> None:
+        """تحميل بنود خصم الموظف غير المسددة كلياً مع صناديق الخصم."""
+        conn = db.get_conn()
+        emp = self.employee_combo.selected_id()
+        self.ded_table.setRowCount(0)
+        self._ded_rows: list[dict] = []
+        if not emp:
+            self._recalc()
+            return
+        deductions = calc.employee_deductions(conn, emp, include_settled=False)
+        preserved = preserved or {}
+        for d in deductions:
+            r = len(self._ded_rows)
+            self._ded_rows.append(d)
+            self.ded_table.insertRow(r)
+            vals = [f"DED-{d['number']:05d}", d["date"], d.get("reason", ""),
+                    fmt.money(d["amount"]), fmt.money(d["remaining"])]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.ded_table.setItem(r, c, item)
+            sb = QDoubleSpinBox()
+            sb.setRange(0.0, round(d["remaining"], 2))
+            sb.setDecimals(2)
+            sb.setSingleStep(50)
+            sb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if d["id"] in preserved:
+                sb.setValue(min(preserved[d["id"]], d["remaining"]))
+            sb.valueChanged.connect(self._recalc)
+            self.ded_table.setCellWidget(r, 5, sb)
+        self._recalc()
+
+    def _deduction_deduction(self) -> float:
+        total = 0.0
+        for r in range(self.ded_table.rowCount()):
+            w = self.ded_table.cellWidget(r, 5)
+            if isinstance(w, QDoubleSpinBox):
+                total += w.value()
+            elif w:
+                for sb in w.findChildren(QDoubleSpinBox):
+                    total += sb.value()
+        return round(total, 2)
+
     def _recalc(self, *_args) -> None:
         net = (self.base_edit.value() + self.additions_edit.value()
-               - self._advance_deduction() - self.other_ded_edit.value())
+               - self._advance_deduction() - self._deduction_deduction()
+               - self.other_ded_edit.value())
         self.net_label.setText(fmt.money(net))
         self.adv_total_label.setText(
             f"إجمالي خصم السلف: {fmt.money(self._advance_deduction())}")
+        self.ded_total_label.setText(
+            f"إجمالي خصم الخصومات: {fmt.money(self._deduction_deduction())}")
 
     # ------------------------------------------------------------------
     def _try_save(self) -> None:
@@ -241,17 +312,26 @@ class PayrollDialog(QDialog):
             return
         self.accept()
 
+    @staticmethod
+    def _spin_value(table, i: int) -> float:
+        w = table.cellWidget(i, 5)
+        if isinstance(w, QDoubleSpinBox):
+            return round(w.value(), 2)
+        if w and w.findChildren(QDoubleSpinBox):
+            return round(w.findChildren(QDoubleSpinBox)[0].value(), 2)
+        return 0.0
+
     def save(self) -> None:
         settlements = []
         for i, a in enumerate(getattr(self, "_adv_rows", [])):
-            w = self.adv_table.cellWidget(i, 5)
-            val = 0.0
-            if isinstance(w, QDoubleSpinBox):
-                val = round(w.value(), 2)
-            elif w and w.findChildren(QDoubleSpinBox):
-                val = round(w.findChildren(QDoubleSpinBox)[0].value(), 2)
+            val = self._spin_value(self.adv_table, i)
             if val > 0:
                 settlements.append((a["id"], val))
+        deduction_settlements = []
+        for i, d in enumerate(getattr(self, "_ded_rows", [])):
+            val = self._spin_value(self.ded_table, i)
+            if val > 0:
+                deduction_settlements.append((d["id"], val))
         data = {
             "date": self.date_edit.iso(),
             "employee_id": self.employee_combo.selected_id(),
@@ -266,6 +346,8 @@ class PayrollDialog(QDialog):
             "other_deductions": self.other_ded_edit.value(),
             "notes": self.notes_edit.toPlainText().strip(),
             "settlements": settlements,
+            "deduction_deduction": self._deduction_deduction(),
+            "deduction_settlements": deduction_settlements,
         }
         repo.save_payroll(db.get_conn(), data, self.payroll_id)
 
@@ -273,3 +355,9 @@ class PayrollDialog(QDialog):
 def settlement_map(payroll: dict) -> dict[int, float]:
     """خريطة (معرّف السلفة -> المبلغ المخصوم) لراتب قائم."""
     return {s["payment_voucher_id"]: s["amount"] for s in payroll.get("settlements", [])}
+
+
+def deduction_settlement_map(payroll: dict) -> dict[int, float]:
+    """خريطة (معرّف بند الخصم -> المبلغ المخصوم) لراتب قائم."""
+    return {s["employee_deduction_id"]: s["amount"]
+            for s in payroll.get("deduction_settlements", [])}

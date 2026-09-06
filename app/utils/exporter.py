@@ -15,7 +15,7 @@ from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageLayout
 from PySide6.QtGui import QFont, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
-from PySide6.QtWidgets import (QApplication, QFileDialog, QMessageBox, QWidget)
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from ..core import repo
 
@@ -142,6 +142,7 @@ def export_excel(parent: QWidget, conn: sqlite3.Connection, title: str,
     if not path.lower().endswith(".xlsx"):
         path += ".xlsx"
     try:
+        from ..core.security import neutralize_formula
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
@@ -191,7 +192,8 @@ def export_excel(parent: QWidget, conn: sqlite3.Connection, title: str,
                     cell.value = float(s.replace(",", ""))
                     cell.number_format = "#,##0.00"
                 else:
-                    cell.value = s
+                    # تحييد حقن صيغ Excel: اسم يبدأ بـ = أو + أو @ يُنفَّذ عند الفتح
+                    cell.value = neutralize_formula(s)
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             r += 1

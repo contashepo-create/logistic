@@ -42,6 +42,12 @@ def expect_rule_error(name: str, fn) -> None:
     check(name, False, "— لم يُرفض الإجراء!")
 
 
+def _count_auto_vouchers(conn) -> int:
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM payment_vouchers WHERE source_expense_id IS NOT NULL"
+    ).fetchone()[0])
+
+
 def main() -> None:
     db.init_db()
     conn = db.get_conn()
@@ -86,22 +92,34 @@ def main() -> None:
                                      "price": 100, "expenses": []}]}))
     inv = repo.save_invoice(conn, {
         "date": "2026-02-10", "customer_id": cust, "notes": "فاتورة تجريبية",
-        "attachments": [],
+        "attachments": [], "vat_rate": 15,
         "trips": [
             {"vehicle_id": veh, "driver_id": driver, "from_loc": "جدة",
-             "to_loc": "مكة", "price": 5000, "notes": "",
+             "to_loc": "مكة", "qty": 5, "unit_price": 1000,
+             "container_numbers": ["CONT1", "CONT2"], "notes": "",
              "expenses": [
-                 {"expense_type": "trip", "amount": 300, "notes": "تريب"},
-                 {"expense_type": "fuel", "amount": 200, "notes": "بنزين"}]},
+                 {"expense_type": "trip", "qty": 1, "unit_amount": 300,
+                  "source": "cash", "account_kind": "cashbox", "account_id": cb,
+                  "notes": "تريب"},
+                 {"expense_type": "fuel", "qty": 2, "unit_amount": 100,
+                  "source": "cash", "account_kind": "cashbox", "account_id": cb,
+                  "notes": "بنزين"}]},
             {"vehicle_id": None, "driver_id": driver, "from_loc": "جدة",
-             "to_loc": "الرياض", "price": 8000, "notes": "",
-             "expenses": [{"expense_type": "card", "amount": 150, "notes": "كارتة"}]},
+             "to_loc": "الرياض", "qty": 1, "unit_price": 8000, "notes": "",
+             "expenses": [{"expense_type": "card", "qty": 1, "unit_amount": 150,
+                           "source": "cash", "account_kind": "cashbox",
+                           "account_id": cb, "notes": "كارتة"}]},
         ]})
     t = calc.invoice_totals(conn, inv)
     check("إجماليات الفاتورة", t["trips_total"] == 13000 and t["expenses_total"] == 650
-          and t["expected_profit"] == 12350 and t["customer_total"] == 13000)
-    check("رصيد العميل بعد الفاتورة",
-          calc.customer_balance(conn, cust) == 18000)
+          and t["expected_profit"] == 12350)
+    check("ضريبة القيمة المضافة على الفاتورة",
+          t["vat_amount"] == 1950 and t["customer_total"] == 14950)
+    check("رصيد العميل بعد الفاتورة (شامل الضريبة)",
+          calc.customer_balance(conn, cust) == 19950)
+    check("سندات الدفع التلقائية من المصروفات النقدية",
+          _count_auto_vouchers(conn) == 3
+          and calc.account_balance(conn, "cashbox", cb) == 9350)
 
     # ---------------- سندات القبض ----------------
     rv1 = repo.save_receipt(conn, {"date": "2026-02-20", "account_kind": "cashbox",
@@ -112,9 +130,9 @@ def main() -> None:
                              "account_id": bnk, "voucher_type": "other",
                              "customer_id": None, "amount": 500,
                              "description": "بيع خردة"})
-    check("رصيد العميل بعد التحصيل", calc.customer_balance(conn, cust) == 12000)
+    check("رصيد العميل بعد التحصيل", calc.customer_balance(conn, cust) == 13950)
     check("رصيد الخزينة بعد القبض",
-          calc.account_balance(conn, "cashbox", cb) == 16000)
+          calc.account_balance(conn, "cashbox", cb) == 15350)
     check("رصيد البنك بعد القبض", calc.account_balance(conn, "bank", bnk) == 20500)
 
     # ---------------- سندات الدفع ----------------
@@ -137,8 +155,9 @@ def main() -> None:
                              "account_id": cb, "voucher_type": "general",
                              "amount": 200, "description": "كهرباء"})
     tp = calc.trip_profit(conn, trip2)
+    # السند التلقائي (150) مستثنى من المصاريف اللاحقة حتى لا يُحتسب مرتين
     check("ربح النقلة الفعلي (مع سند لاحق)", tp["net"] == 8000 - 150 - 400)
-    check("رصيد الخزينة بعد الدفعات", calc.account_balance(conn, "cashbox", cb) == 14600)
+    check("رصيد الخزينة بعد الدفعات", calc.account_balance(conn, "cashbox", cb) == 13950)
     check("رصيد البنك بعد الدفعات", calc.account_balance(conn, "bank", bnk) == 20200)
 
     # ---------------- الرواتب ----------------
@@ -150,7 +169,7 @@ def main() -> None:
         "settlements": [(adv, 500)]})
     p = repo.get_payroll(conn, pay)
     check("صافي الراتب", p["net_salary"] == 3000 + 200 - 500 - 100)
-    check("رصيد الخزينة بعد الراتب", calc.account_balance(conn, "cashbox", cb) == 12000)
+    check("رصيد الخزينة بعد الراتب", calc.account_balance(conn, "cashbox", cb) == 11350)
     advs = repo.employee_advances(conn, driver)
     check("المتبقي من السلفة بعد الخصم الجزئي", advs[0]["remaining"] == 300)
     expect_rule_error("منع خصم سلفة أكبر من المتبقي",
@@ -169,11 +188,12 @@ def main() -> None:
 
     # ---------------- كشوف الحساب والتقارير ----------------
     st = calc.customer_statement(conn, cust, "2026-01-01", "2026-12-31")
-    check("كشف حساب العميل", st["opening"] == 5000 and st["closing"] == 12000
+    check("كشف حساب العميل", st["opening"] == 5000 and st["closing"] == 13950
+          and st["invoiced"] == 14950 and st["collected"] == 6000
           and len(st["rows"]) == 2)
     ast = calc.account_statement(conn, "cashbox", cb, "2026-01-01", "2026-12-31")
-    check("كشف حساب الخزينة", ast["opening"] == 10000 and ast["closing"] == 12000
-          and len(ast["rows"]) == 5)  # سند قبض + 3 سندات دفع + راتب
+    check("كشف حساب الخزينة", ast["opening"] == 10000 and ast["closing"] == 11350
+          and len(ast["rows"]) == 8)  # قبض + 3 تلقائية + 3 يدوية + راتب
     emp_st = calc.employee_statement(conn, driver, "2026-01-01", "2026-12-31")
     check("كشف حساب الموظف (رواتب/سلف/تريب)",
           emp_st["totals"]["salaries_net"] == 2600
@@ -185,30 +205,31 @@ def main() -> None:
           and vr[0]["maintenance"] == 300 and vr[0]["net"] == 4200)
     pnl = calc.pnl_report(conn, "2026-01-01", "2026-12-31")
     check("P&L: الإيرادات", pnl["total_revenue"] == 13500)
-    check("P&L: المصروفات", pnl["total_expenses"] == 650 + 2600 + 800 + 300 + 200)
-    check("P&L: الصافي", pnl["net"] == 8950)
+    check("P&L: ضريبة محصلة معلومة منفصلة", pnl["vat_collected"] == 1950)
+    check("P&L: المصروفات", pnl["total_expenses"] == 650 + 400 + 2600 + 800 + 300 + 200)
+    check("P&L: الصافي", pnl["net"] == 8550)
 
-    # ---------------- التعديل وإعادة الاحتساب تلقائياً ----------------
+    # ---------------- عدم تعديل الفاتورة بعد الإصدار ----------------
     full = calc.get_invoice_full(conn, inv)
-    full["trips"][0]["price"] = 5500
-    repo.save_invoice(conn, full, inv)
-    check("إعادة احتساب رصيد العميل بعد تعديل الفاتورة",
-          calc.customer_balance(conn, cust) == 12500)
-    check("إعادة احتساب أداء السيارة", calc.vehicle_report(
-        conn, None, None, veh)[0]["revenue"] == 5500)
+    full["trips"][0]["unit_price"] = 1100
+    expect_rule_error("منع تعديل فاتورة بعد إصدارها",
+                      lambda: repo.save_invoice(conn, full, inv))
+    expect_rule_error("منع حذف فاتورة بعد إصدارها",
+                      lambda: repo.delete_invoice(conn, inv))
 
-    # حذف نقلة مرتبطة بسند دفع => مرفوض
-    full2 = calc.get_invoice_full(conn, inv)
-    full2["trips"] = [full2["trips"][0]]
-    expect_rule_error("منع حذف نقلة مرتبطة بسند دفع",
-                      lambda: repo.save_invoice(conn, full2, inv))
+    # منع جعل رصيد الخزينة سالباً
+    expect_rule_error("منع صرف يفوق رصيد الخزينة",
+                      lambda: repo.save_payment(conn, {
+                          "date": "2026-03-04", "account_kind": "cashbox",
+                          "account_id": cb, "voucher_type": "general",
+                          "amount": 999999, "description": "صرف مبالغ"}))
 
     # حذف الراتب => عودة السلفة غير مسددة
     repo.delete_payroll(conn, pay)
     advs = repo.employee_advances(conn, driver)
     check("عودة السلفة بعد حذف الراتب",
           advs[0]["remaining"] == 800
-          and calc.account_balance(conn, "cashbox", cb) == 14600)
+          and calc.account_balance(conn, "cashbox", cb) == 13950)
 
     # ---------------- قاعدة السنوات على التعديل/الحذف ----------------
     expect_rule_error("منع تعديل حركة بتاريخ خارج السنة المفتوحة",
@@ -218,16 +239,32 @@ def main() -> None:
                           "amount": 100}, rv1))
     repo.set_year_status(conn, y2026, "closed")
     snap = repo.create_snapshot(conn, y2026)
-    # النقلات 13500 + إيرادات أخرى 500 − (مباشرة 650 + رواتب 0 (حُذف) + سلف 800
-    # + صيانة 300 + عامة 200) = 12050
+    # الإيرادات 13500 − (مباشرة 650 + رحلات يدوية 400 + رواتب 0 (حُذف)
+    # + سلف 800 + صيانة 300 + عامة 200) = 11150
     check("لقطة الإغلاق", snap["year"] == 2026 and len(snap["customers"]) == 1
-          and abs(snap["pnl"]["net"] - 12050) < 0.01)
+          and abs(snap["pnl"]["net"] - 11150) < 0.01)
     expect_rule_error("منع حذف حركة داخل سنة مغلقة",
                       lambda: repo.delete_receipt(conn, rv1))
     repo.set_year_status(conn, y2026, "open")
     repo.delete_receipt(conn, rv1)  # الآن ينجح
     check("حذف بعد إعادة فتح السنة",
-          calc.customer_balance(conn, cust) == 18500)
+          calc.customer_balance(conn, cust) == 19950)
+
+    # ---------------- إشعار دائن بمرتجع نقلة (بديل التعديل) ----------------
+    trips2 = conn.execute("SELECT id FROM invoice_trips WHERE invoice_id=? "
+                          "ORDER BY id", (inv,)).fetchall()
+    note_id = repo.save_credit_debit_note(conn, {
+        "note_type": "credit", "invoice_id": inv, "customer_id": cust,
+        "date": "2026-04-01", "trip_ids": [trips2[1]["id"]],
+        "reason": "مرتجع نقلة الرياض"})
+    check("إشعار دائن بمرتجع نقلة (8000 + ضريبة 1200)",
+          repo.get_credit_debit_note(conn, note_id)["total"] == 9200
+          and calc.customer_balance(conn, cust) == 10750)
+    expect_rule_error("منع إرجاع نفس النقلة مرتين",
+                      lambda: repo.save_credit_debit_note(conn, {
+                          "note_type": "credit", "invoice_id": inv,
+                          "customer_id": cust, "date": "2026-04-02",
+                          "trip_ids": [trips2[1]["id"]], "reason": "تكرار"}))
 
     print(f"\n🎉 كل الاختبارات نجحت ({PASS} فحصاً). قاعدة اختبار: "
           f"{db.db_path()}")

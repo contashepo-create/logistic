@@ -12,20 +12,24 @@ from PySide6.QtWidgets import (
 
 from .. import APP_TITLE, __version__
 from ..core import db, repo
-from ..core.rules import has_open_year
 from .page_settings import SettingsPage
 from .pages_master import CustomersPage, EmployeesPage, VehiclesPage, YearsPage
 from .pages_ops import InvoicesPage, PaymentsPage, ReceiptsPage
 from .pages_payroll import PayrollPage
 from .pages_reports import (
-    CustomerStatementReportPage, EmployeeStatementReportPage, PnlReportPage,
-    TripProfitsReportPage, VehiclesReportPage,
+    AgingReportPage, CustomerStatementReportPage, EmployeeStatementReportPage,
+    PnlReportPage, SupplierStatementReportPage, TripProfitsReportPage,
+    VehiclesReportPage,
+)
+from .pages_suppliers import (
+    AdvancesPage, DeductionsPage, NotesPage, PurchasesPage, SuppliersPage,
 )
 from .pages_treasury import BanksPage, CashboxesPage
 
 NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
     ("📁 البيانات الأساسية", [
         ("العملاء", CustomersPage),
+        ("الموردون", SuppliersPage),
         ("الموظفون والسائقون", EmployeesPage),
         ("السيارات", VehiclesPage),
         ("السنوات المالية", YearsPage),
@@ -36,15 +40,21 @@ NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
     ]),
     ("🔄 العمليات اليومية", [
         ("فواتير النقل", InvoicesPage),
+        ("فواتير المشتريات", PurchasesPage),
         ("سندات القبض", ReceiptsPage),
         ("سندات الدفع", PaymentsPage),
+        ("إشعارات مدين/دائن", NotesPage),
     ]),
     ("💰 الرواتب", [
         ("إدارة الرواتب", PayrollPage),
+        ("متابعة السلفيات", AdvancesPage),
+        ("الخصومات", DeductionsPage),
     ]),
     ("📊 التقارير الذكية", [
         ("أرباح الفواتير والرحلات", TripProfitsReportPage),
         ("كشف حساب عميل", CustomerStatementReportPage),
+        ("كشف حساب مورّد", SupplierStatementReportPage),
+        ("أعمار الديون", AgingReportPage),
         ("كشف حساب موظف/سائق", EmployeeStatementReportPage),
         ("أداء السيارات", VehiclesReportPage),
         ("الأرباح والخسائر (P&L)", PnlReportPage),

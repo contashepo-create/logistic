@@ -2,19 +2,12 @@
 """القسم الخامس: التقارير الذكية الخمسة (فلاتر تاريخ + تصدير PDF/Excel + طباعة)."""
 from __future__ import annotations
 
-from datetime import date
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QTabWidget, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from ..core import calc, db, repo
 from ..utils import exporter, fmt
-from ..utils.fmt import EXPENSE_TYPES, VEHICLE_EXPENSES
 from .pages_ops import FilterRow
-from .widgets import DictCombo, ExportBar, PageFrame, PlainTable, TotalsBar
-from .widgets import info
+from .widgets import DictCombo, PageFrame, PlainTable, TotalsBar
 
 
 class ReportPage(QWidget):
@@ -335,8 +328,9 @@ class VehiclesReportPage(ReportPage):
 # ---------------------------------------------------------------------------
 class PnlReportPage(ReportPage):
     TITLE = "تقرير الأرباح والخسائر الشامل (P&L)"
-    SUBTITLE = ("(إيرادات النقلات + الإيرادات الأخرى) − (المصروفات المباشرة + "
-                "الرواتب الصافية + السلفيات + الصيانة + المصاريف العامة)")
+    SUBTITLE = ("(إيرادات النقلات + مصروف العميل + الإيرادات الأخرى ± الإشعارات) − "
+                "(المباشرة + سندات الرحلات + الرواتب + السلف + الصيانة + العامة "
+                "+ المشتريات + مسحوبات المالك)")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -357,20 +351,38 @@ class PnlReportPage(ReportPage):
         d_from, d_to = self.filter_row.range()
         self._data = calc.pnl_report(db.get_conn(), d_from, d_to)
         d = self._data
+        from ..utils.fmt import PURCHASE_EXPENSE_CATEGORIES
         rows = [
-            ["إيرادات النقلات", fmt.money(d["transport_revenue"])],
+            ["— الإيرادات —", ""],
+            ["إيرادات النقلات (قبل الضريبة، وتشمل مصروف العميل)",
+             fmt.money(d["transport_revenue"])],
             ["الإيرادات الأخرى (خردة / متنوع)", fmt.money(d["other_revenue"])],
+            ["إشعارات مدينة (إضافة)", fmt.money(d["debit_notes_adjust"])],
+            ["إشعارات دائنة (حسم)", fmt.money(d["credit_notes_adjust"])],
             ["إجمالي الإيرادات", fmt.money(d["total_revenue"])],
+            ["— المصروفات —", ""],
             ["مصروفات النقلات المباشرة (تريب/بنزين/كارتة)",
              fmt.money(d["direct_expenses"])],
+            ["سندات مصروفات الرحلات اليدوية", fmt.money(d["trip_payments"])],
             ["الرواتب الصافية المنصرفة", fmt.money(d["salaries"])],
             ["إجمالي السلفيات المسجلة", fmt.money(d["advances"])],
             ["مصاريف الصيانة (سندات السيارات)", fmt.money(d["maintenance"])],
             ["المصاريف العامة (إيجار / كهرباء ...)", fmt.money(d["general_expenses"])],
+            ["مسحوبات صاحب المنشأة", fmt.money(d["owner_withdrawals"])],
+            ["إجمالي المشتريات (صافي قبل الضريبة)", fmt.money(d["purchase_expenses"])],
+        ]
+        for key, label in PURCHASE_EXPENSE_CATEGORIES.items():
+            value = d.get(f"purchase_{key}", 0)
+            if value:
+                rows.append([f"      ← {label}", fmt.money(value)])
+        rows += [
             ["إجمالي المصروفات", fmt.money(d["total_expenses"])],
             ["صافي الربح / (الخسارة) للفترة", fmt.money(d["net"])],
+            ["— معلومة ضريبية —", ""],
+            ["ضريبة القيمة المضافة المحصَّلة (لا تدخل الإيراد)",
+             fmt.money(d["vat_collected"])],
         ]
-        self.table.set_rows(rows, bold_last=True)
+        self.table.set_rows(rows, bold_last=False)
         self.totals.set_value("إجمالي الإيرادات", d["total_revenue"])
         self.totals.set_value("إجمالي المصروفات", d["total_expenses"])
         self.totals.set_value("صافي الربح / الخسارة", d["net"])
@@ -381,4 +393,117 @@ class PnlReportPage(ReportPage):
             return None
         return [("إجمالي الإيرادات", fmt.money(d["total_revenue"])),
                 ("إجمالي المصروفات", fmt.money(d["total_expenses"])),
-                ("صافي الربح / الخسارة", fmt.money(d["net"]))]
+                ("صافي الربح / الخسارة", fmt.money(d["net"])),
+                ("ضريبة القيمة المضافة المحصَّلة", fmt.money(d["vat_collected"]))]
+
+
+class AgingReportPage(ReportPage):
+    """أعمار الديون: توزيع المستحقات على شرائح عمرية (السداد FIFO)."""
+
+    TITLE = "أعمار الديون"
+    SUBTITLE = ("توزيع المستحقات حسب عمر كل فاتورة — السداد يُخصم بأسلوب "
+                "الأقدم أولاً. تبويب للموردين (ما علينا) وتبويب للعملاء (ما لنا).")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: list[dict] = []
+        self.filter_row = FilterRow()
+        self.frame.add_layout_at(0, self.filter_row)
+        self.filter_row.refresh_btn.clicked.connect(self.load)
+        self.tabs = QTabWidget()
+        self.frame.add_widget(self.tabs)
+        headers = ["الاسم", "حتى 30 يوم", "31 – 60", "61 – 90",
+                   "أكثر من 90", "الإجمالي المستحق"]
+        self.sup_table = PlainTable(headers)
+        self.cust_table = PlainTable(headers)
+        self.tabs.addTab(self.sup_table, "🏭 ديون الموردين (ما علينا)")
+        self.tabs.addTab(self.cust_table, "👥 ديون العملاء (ما لنا)")
+        self.totals = TotalsBar(["حتى 30 يوم", "31 – 60", "61 – 90",
+                                 "أكثر من 90", "الإجمالي"])
+        self.frame.add_widget(self.totals, stretch=0)
+        # يُربط بعد إنشاء كل الأدوات حتى لا يُستدعى load() قبل اكتمال البناء
+        self.tabs.currentChanged.connect(lambda _: self.load())
+        self.load()
+
+    def _rows(self, data: list[dict]) -> list[list]:
+        return [[r["name"], fmt.money(r["current"]), fmt.money(r["d31_60"]),
+                 fmt.money(r["d61_90"]), fmt.money(r["over90"]),
+                 fmt.money(r["total"])] for r in data]
+
+    def _as_of(self) -> str:
+        """تاريخ الاحتساب = نهاية الفترة المختارة."""
+        return self.filter_row.range()[1]
+
+    def _period(self) -> str:
+        return f"محسوب حتى: {self._as_of()}"
+
+    def load(self) -> None:
+        conn = db.get_conn()
+        as_of = self._as_of()
+        suppliers = calc.suppliers_aging(conn, as_of)
+        customers = calc.customers_aging(conn, as_of)
+        self.sup_table.set_rows(self._rows(suppliers))
+        self.cust_table.set_rows(self._rows(customers))
+        self._data = suppliers if self.tabs.currentIndex() == 0 else customers
+        keys = ("current", "d31_60", "d61_90", "over90", "total")
+        labels = ("حتى 30 يوم", "31 – 60", "61 – 90", "أكثر من 90", "الإجمالي")
+        for key, label in zip(keys, labels):
+            self.totals.set_value(label, sum(r[key] for r in self._data))
+
+    def current_table(self) -> PlainTable:
+        return self.sup_table if self.tabs.currentIndex() == 0 else self.cust_table
+
+    def summary_lines(self):
+        keys = ("current", "d31_60", "d61_90", "over90", "total")
+        labels = ("حتى 30 يوم", "31 – 60 يوم", "61 – 90 يوم", "أكثر من 90 يوم",
+                  "الإجمالي المستحق")
+        return [(label, fmt.money(sum(r[k] for r in self._data)))
+                for k, label in zip(keys, labels)]
+
+
+class SupplierStatementReportPage(ReportPage):
+    """كشف حساب مورّد بفلاتر تاريخ."""
+
+    TITLE = "كشف حساب مورّد"
+    SUBTITLE = "الافتتاحي + فواتير المشتريات − سندات الدفع = الرصيد الحالي"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        conn = db.get_conn()
+        self.filter_row = FilterRow()
+        self.frame.add_layout_at(0, self.filter_row)
+        self.supplier_combo = DictCombo()
+        self.supplier_combo.load(repo.list_suppliers(conn))
+        self.filter_row.add_filter("المورّد", self.supplier_combo)
+        self.filter_row.refresh_btn.clicked.connect(self.load)
+        self.table = PlainTable(["التاريخ", "المستند", "البيان",
+                                 "دائن (مستحق له)", "مدين (مسدَّد)", "الرصيد"])
+        self.frame.add_widget(self.table)
+        self._export_table = self.table
+        self._st: dict = {}
+        self.load()
+
+    def load(self) -> None:
+        sid = self.supplier_combo.selected_id()
+        if not sid:
+            self.table.set_rows([])
+            return
+        d_from, d_to = self.filter_row.range()
+        self._st = calc.supplier_statement(db.get_conn(), sid, d_from, d_to)
+        rows = [[r["date"], r["doc"], r["desc"], fmt.money(r["credit"]),
+                 fmt.money(r["debit"]), fmt.money(r["balance"])]
+                for r in self._st["rows"]]
+        totals = self._st["totals"]
+        rows.append(["", "الإجمالي / الرصيد النهائي", "",
+                     fmt.money(totals["credit"]), fmt.money(totals["debit"]),
+                     fmt.money(totals["balance"])])
+        self.table.set_rows(rows, bold_last=True)
+
+    def summary_lines(self):
+        totals = self._st.get("totals", {})
+        if not totals:
+            return None
+        return [("الرصيد الافتتاحي", fmt.money(self._st.get("opening", 0))),
+                ("إجمالي المشتريات", fmt.money(totals.get("credit", 0))),
+                ("إجمالي المسدَّد", fmt.money(totals.get("debit", 0))),
+                ("الرصيد الحالي", fmt.money(totals.get("balance", 0)))]

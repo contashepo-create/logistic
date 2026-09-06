@@ -10,14 +10,14 @@ import sqlite3
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..core import calc, db
+from ..core import calc
 from ..core.rules import RuleError
 from ..utils import exporter, fmt
-from ..utils.fmt import normalize_digits, parse_float
+from ..utils.fmt import parse_float
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,10 @@
 """صفحات البيانات الأساسية: العملاء، الموظفون، السيارات، السنوات المالية."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QWidget
-
 from ..core import calc, db, repo
 from ..utils import fmt
 from .dialogs_master import (
-    AccountDialog, CustomerDialog, EmployeeDialog, SnapshotDialog, VehicleDialog,
-    YearDialog,
+    CustomerDialog, EmployeeDialog, SnapshotDialog, VehicleDialog, YearDialog,
 )
 from .pages_base import CrudPage
 from .widgets import DataTable, confirm, info, warn

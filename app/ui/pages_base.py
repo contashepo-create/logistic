@@ -6,7 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..core import db
-from ..utils import exporter, fmt
+from ..utils import exporter
 from ..utils.fmt import normalize_digits
 from .widgets import DataTable, PageFrame
 

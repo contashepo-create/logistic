@@ -115,14 +115,14 @@ d.trips.append({"vehicle_id": ids["veh1"], "driver_id": ids["drv1"],
                 "notes": "", "expenses": []})
 d.refresh(); app.processEvents()
 check("سطر النقلة ظهر", d.trips_table.rowCount() == 1)
-t1 = d.totals._values["إجمالي قيمة النقلات"].text()
+t1 = d.totals._values["قيمة النقلات"].text()
 check("إجمالي النقلات الحي = 2,500.00", t1 == "2,500.00", f"({t1})")
 
 from app.ui.dialogs_ops import TripExpensesDialog, ExpenseDialog
 d.trips[0]["expenses"] = [{"expense_type": "fuel", "amount": 200, "notes": ""},
                           {"expense_type": "trip", "amount": 120, "notes": ""}]
 d.refresh(); app.processEvents()
-t2 = d.totals._values["إجمالي المصروفات المباشرة"].text()
+t2 = d.totals._values["التكلفة المباشرة"].text()
 t3 = d.totals._values["الربح المتوقع"].text()
 check("المصروفات الحية = 320.00", t2 == "320.00", f"({t2})")
 check("الربح المتوقع الحي = 2,180.00", t3 == "2,180.00", f"({t3})")
@@ -130,7 +130,7 @@ check("الربح المتوقع الحي = 2,180.00", t3 == "2,180.00", f"({t3}
 # حذف النقلة عبر مسار الزر (remove_trip)
 d.remove_trip(0)
 check("حذف النقلة من الواجهة", d.trips_table.rowCount() == 0
-      and d.totals._values["إجمالي قيمة النقلات"].text() == "0.00")
+      and d.totals._values["قيمة النقلات"].text() == "0.00")
 
 # نافذة مصروفات النقلة: إضافة/تعديل/حذف
 trip = {"from_loc": "أ", "to_loc": "ب", "price": 100, "expenses": []}
@@ -138,17 +138,17 @@ exd = TripExpensesDialog(trip)
 exd.show(); app.processEvents()
 exp_dlg = ExpenseDialog(exd)
 exp_dlg.type_combo.setCurrentIndex(exp_dlg.type_combo.findData("card"))
-exp_dlg.amount_edit.setText("75.50")
+exp_dlg.unit_edit.setText("75.50")
 exp_dlg.notes_edit.setText("كارتة فحص")
 trip["expenses"].append(exp_dlg.data())
 exd.refresh()
 check("مصروف أُضيف عبر النافذة", exd.table.rowCount() == 1
-      and exd.table.item(0, 1).text() == "75.50")
+      and exd.table.item(0, 3).text() == "75.50")  # عمود «الإجمالي»
 exp_dlg2 = ExpenseDialog(exd, trip["expenses"][0])
-exp_dlg2.amount_edit.setText("80")
+exp_dlg2.unit_edit.setText("80")
 trip["expenses"][0].update(exp_dlg2.data())
 exd.refresh()
-check("تعديل المصروف عبر النافذة", exd.table.item(0, 1).text() == "80.00")
+check("تعديل المصروف عبر النافذة", exd.table.item(0, 3).text() == "80.00")
 exd.del_expense(0)
 check("حذف المصروف عبر النافذة", exd.table.rowCount() == 0)
 exd.close()
@@ -178,11 +178,12 @@ from app.ui.dialogs_ops import PaymentDialog
 
 pd = PaymentDialog()
 pd.show(); app.processEvents()
-for i, vt in enumerate(("trip", "advance", "vehicle", "general")):
+# ترتيب الصفحات يتبع PAYMENT_TYPES — يُقارن بالصفحة نفسها لا بفهرس ثابت
+for vt in ("trip", "advance", "vehicle", "supplier", "purchase", "owner", "general"):
     pd.type_combo.setCurrentIndex(pd.type_combo.findData(vt))
     app.processEvents()
     check(f"تبديل النوع إلى {vt} يبدّل المكدس",
-          pd.stack_lay.currentIndex() == i)
+          pd.stack_lay.currentWidget() is pd._pages[vt])
 pd.close()
 
 pd = PaymentDialog()
@@ -190,7 +191,7 @@ pd.date_edit.set_iso("2026-06-05")
 pd.account_combo.select("cashbox", ids["cb"])
 idx = pd.type_combo.findData("general")
 pd.type_combo.setCurrentIndex(idx)
-pd.amount_edit.setText("250")
+pd.unit_edit.setText("250")
 pd.desc_edit.setText("ي" * 6000)  # سقف النص
 try:
     pd.save()
