@@ -188,10 +188,30 @@ def normalize_tax_profile(p: dict) -> dict:
     return out
 
 
+MONEY_MAX = 999_999_999_999.0
+
+
 def round2(value) -> float:
-    """تقريب محاسبي لخانتين عشريتين."""
-    return round(float(value or 0) + 1e-9, 2) if float(value or 0) >= 0 \
-        else round(float(value or 0) - 1e-9, 2)
+    """تقريب محاسبي لخانتين عشريتين.
+
+    مطابق لـ roundMoney في نسخة الويب: يرفض القيم غير المنتهية (NaN/Inf)
+    والقيم خارج السقف المسموح. رفض NaN ضروري لأنه يسري صامتاً في كل
+    المجاميع فيُفسد التقارير كاملة دون أي رسالة خطأ.
+    """
+    from .rules import RuleError
+    try:
+        raw = float(value if value not in (None, "") else 0)
+    except (TypeError, ValueError):
+        raise RuleError("قيمة مبلغ غير صالحة.") from None
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        raise RuleError("قيمة مبلغ غير صالحة.")
+    # 1e-9 يعوّض خطأ التمثيل الثنائي كي تُقرَّب حالات النصف للأعلى
+    v = round(raw + 1e-9, 2) if raw >= 0 else round(raw - 1e-9, 2)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise RuleError("قيمة مبلغ غير صالحة.")
+    if abs(v) > MONEY_MAX:
+        raise RuleError("المبلغ خارج النطاق المسموح (الحد 999,999,999,999).")
+    return v
 
 
 # ---------------------------------------------------------------------------

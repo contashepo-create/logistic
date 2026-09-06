@@ -173,9 +173,14 @@ def _count(conn, sql: str, params=()) -> int:
 def _m(x) -> float:
     """تقنية دفاعية: كل مبلغ يُخزَّن مقرباً لمنزلتين عشريتين وضمن سقف منطقي."""
     try:
-        v = round(float(x or 0), 2)
+        raw = float(x if x not in (None, "") else 0)
     except (TypeError, ValueError):
         raise RuleError("قيمة مبلغ غير صالحة.")
+    # NaN يمر من كل مقارنات الحجم (abs(nan) > سقف == False) فيجب رفضه صراحة،
+    # وإلا نزل إلى SQLite كـ NULL وفشل بقيد NOT NULL برسالة إنجليزية خام.
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        raise RuleError("قيمة مبلغ غير صالحة.")
+    v = round(raw, 2)
     if abs(v) > 999_999_999_999.0:
         raise RuleError("المبلغ خارج النطاق المسموح (الحد 999,999,999,999).")
     return v
