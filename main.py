@@ -30,14 +30,20 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     from app import APP_TITLE
-    from app.core import db
+    from app.core import db, repo
     from app.ui.theme import apply_theme
 
     db.init_db()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-    apply_theme(app)
+    # الوضع البصري المحفوظ (فاتح/داكن) من إعدادات المستخدم.
+    try:
+        saved = repo.get_setting(db.get_conn(), "ui_theme", "light")
+        dark = saved == "dark"
+    except Exception:  # noqa: BLE001 — الوضع الافتراضي فاتح عند أي خطأ
+        dark = False
+    apply_theme(app, dark=dark)
 
     from app.ui.main_window import MainWindow
     window = MainWindow()

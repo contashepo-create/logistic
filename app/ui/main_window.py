@@ -7,13 +7,14 @@ from datetime import date
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE, __version__
 from ..core import telegram_bot, db, repo
 from .page_settings import SettingsPage
+from .pages_home import DashboardPage
 from .pages_master import CustomersPage, EmployeesPage, VehiclesPage, YearsPage
 from .pages_ops import InvoicesPage, PaymentsPage, ReceiptsPage
 from .pages_payroll import PayrollPage
@@ -29,6 +30,7 @@ from .pages_treasury import BanksPage, CashboxesPage
 
 # أيقونة كل صفحة في الشريط الجانبي
 NAV_ICONS = {
+    "لوحة المعلومات": "🏠",
     "العملاء": "👥",
     "الموردون": "🏭",
     "الموظفون والسائقون": "🧑‍🔧",
@@ -55,6 +57,9 @@ NAV_ICONS = {
 }
 
 NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
+    ("نظرة عامة", [
+        ("لوحة المعلومات", DashboardPage),
+    ]),
     ("البيانات الأساسية", [
         ("العملاء", CustomersPage),
         ("الموردون", SuppliersPage),
@@ -157,6 +162,7 @@ class MainWindow(QMainWindow):
                 icon = NAV_ICONS.get(label, "•")
                 item = QListWidgetItem(f"{icon}   {label}")
                 item.setSizeHint(QSize(SIDEBAR_WIDTH, 40))
+                item.setData(Qt.ItemDataRole.UserRole, label)
                 self.nav_list.addItem(item)
                 try:
                     page = page_cls()
@@ -172,8 +178,17 @@ class MainWindow(QMainWindow):
                 self._pages.append((label, page))
                 if hasattr(page, "changed"):
                     page.changed.connect(self.refresh_year_info)
+                if hasattr(page, "navigate_requested"):
+                    page.navigate_requested.connect(self.goto_page)
         self.nav_list.currentRowChanged.connect(self._nav_changed)
         nav.addWidget(self.nav_list, 1)
+
+        # زر تبديل الوضع (فاتح/داكن) — يعيد تلوين الواجهة كلها دون إعادة بناء
+        self.theme_toggle = QPushButton()
+        self.theme_toggle.setObjectName("themeToggle")
+        self.theme_toggle.clicked.connect(self._toggle_theme)
+        self._update_theme_toggle()
+        nav.addWidget(self.theme_toggle)
 
         # بطاقة حالة السنة المالية أسفل الشريط
         footer = QFrame()
@@ -287,6 +302,14 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
 
+    def goto_page(self, label: str) -> None:
+        """الانتقال إلى صفحة باسمها (من لوحة المعلومات أو روابط أخرى)."""
+        for row in range(self.nav_list.count()):
+            item = self.nav_list.item(row)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == label:
+                self.nav_list.setCurrentRow(row)
+                return
+
     def _page_index_for_row(self, row: int) -> int | None:
         idx = 0
         for _section, items in NAV_SECTIONS:
@@ -297,6 +320,35 @@ class MainWindow(QMainWindow):
                 row -= 1
                 idx += 1
         return None
+
+    # ------------------------------------------------------------------
+    def _update_theme_toggle(self) -> None:
+        """نص الزر يوضّح الوجهة (الوضع الذي سننتقل إليه)."""
+        from .theme import is_dark
+        self.theme_toggle.setText(
+            "☀️ الوضع الفاتح" if is_dark() else "🌙 الوضع الداكن")
+        self.theme_toggle.setToolTip(
+            "تبديل المظهر بين الفاتح والداكن (يُحفظ تلقائياً)")
+
+    def _toggle_theme(self) -> None:
+        """عكس الوضع البصري، إعادة تلوين كل الواجهة، وحفظ الاختيار."""
+        from PySide6.QtWidgets import QApplication
+        from .theme import toggle_theme
+        app = QApplication.instance()
+        dark = toggle_theme(app)
+        try:
+            repo.set_setting(db.get_conn(), "ui_theme",
+                             "dark" if dark else "light")
+        except Exception:  # noqa: BLE001 — الحفظ ثانوي لا يوقف التبديل
+            pass
+        self._update_theme_toggle()
+        # إعادة بناء العناصر الملوّنة برمجياً (مثل صف الإجمالي في الجداول)
+        for _label, page in self._pages:
+            if hasattr(page, "refresh"):
+                try:
+                    page.refresh()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ------------------------------------------------------------------
     def refresh_year_info(self) -> None:

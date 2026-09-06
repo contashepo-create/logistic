@@ -26,6 +26,15 @@ from ..utils import fmt
 from ..utils.fmt import parse_float
 
 
+def _token(key: str) -> str:
+    """لون من رموز الثيم النشطة (يكيّف الأرقام/الألوان مع الفاتح والداكن)."""
+    try:
+        from .theme import token
+        return token(key)
+    except Exception:  # noqa: BLE001 — قيمة احتياطية لا تعطّل التشغيل
+        return "#4f46e5"
+
+
 # ---------------------------------------------------------------------------
 # رسائل
 # ---------------------------------------------------------------------------
@@ -439,10 +448,14 @@ class PlainTable(QTableWidget):
                 item.setFont(f)
                 self.setItem(r, c, item)
         if bold_last and rows:
+            # صف الإجمالي يتلوّن حسب الوضع البصري (فاتح/داكن) بدل الأبيض الثابت.
+            from PySide6.QtGui import QColor
+            from .theme import token as _t
+            bg = QColor(_t("CARD"))
             for c in range(self.columnCount()):
                 it = self.item(self.rowCount() - 1, c)
                 if it is not None:
-                    it.setBackground(Qt.GlobalColor.white)
+                    it.setBackground(bg)
 
     def export_data(self) -> tuple[list[str], list[list]]:
         rows = []
@@ -571,8 +584,9 @@ class PageFrame(QWidget):
 # ---------------------------------------------------------------------------
 # شريط الإجماليات — بطاقات مؤشرات (KPI) حديثة
 # ---------------------------------------------------------------------------
-KPI_ACCENTS = ["#4f46e5", "#0e9f6e", "#7c3aed", "#d97706", "#e02424",
-               "#0e7490", "#c026d3"]
+# ألوان الأرقام تُقرأ من رموز الثيم (theme) لا كقيم ثابتة، فتتكيّف تلقائياً
+# مع الوضعين الفاتح/الداكن (مفاتيح من لوحة الألوان النشطة).
+KPI_ACCENT_KEYS = ["PRIMARY", "SUCCESS", "VIOLET", "WARNING", "DANGER"]
 
 
 def add_shadow(widget, blur: int = 16, alpha: int = 30, dy: int = 2) -> None:
@@ -611,13 +625,14 @@ class TotalsBar(QWidget):
             value = QLabel("0.00")
             value.setObjectName("kpiValue")
             value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            accent = KPI_ACCENTS[i % len(KPI_ACCENTS)]
-            value.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
+            key = KPI_ACCENT_KEYS[i % len(KPI_ACCENT_KEYS)]
+            value.setStyleSheet(f"color:{_token(key)}; "
+                                "font-size:15pt; font-weight:bold;")
             box.addWidget(caption)
             box.addWidget(value)
             lay.addWidget(card, 1)
             self._values[text] = value
-            self._accents[text] = accent
+            self._accents[text] = key
 
     def set_value(self, label: str, value, money: bool = True) -> None:
         v = self._values.get(label)
@@ -625,14 +640,15 @@ class TotalsBar(QWidget):
             return
         text = fmt.money(value) if money else str(value)
         v.setText(text)
-        accent = self._accents.get(label, "#4f46e5")
+        key = self._accents.get(label, "PRIMARY")
         try:
             negative = float(value or 0) < 0
         except (TypeError, ValueError):
             negative = False
         if negative:
-            accent = "#e02424"
-        v.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
+            key = "DANGER"
+        v.setStyleSheet(f"color:{_token(key)}; "
+                        "font-size:15pt; font-weight:bold;")
 
 
 # ---------------------------------------------------------------------------
