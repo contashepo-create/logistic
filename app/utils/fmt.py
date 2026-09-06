@@ -117,11 +117,6 @@ def money(x) -> str:
     return f"{v:,.2f}"
 
 
-def today_iso() -> str:
-    from datetime import date
-    return date.today().isoformat()
-
-
 def month_name(month: int) -> str:
     return MONTHS_AR[month - 1] if 1 <= month <= 12 else str(month)
 
@@ -204,11 +199,6 @@ def amount_to_arabic_words(amount: float, currency: str = "ريال",
 def balance_side(value: float) -> str:
     v = round(float(value or 0), 2)
     return "debit" if v > 0 else ("credit" if v < 0 else "zero")
-
-
-def balance_side_label(value: float) -> str:
-    side = balance_side(value)
-    return {"debit": "عليه", "credit": "له", "zero": "مسدَّد"}[side]
 
 
 def balance_text(value: float) -> str:

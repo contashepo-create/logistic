@@ -25,7 +25,6 @@ os.environ["LOGISTIC_DATA_DIR"] = tempfile.mkdtemp(prefix="logistic_full_")
 
 from app.core import calc, db, repo                      # noqa: E402
 from app.core.rules import RuleError                    # noqa: E402
-from app.utils import fmt                               # noqa: E402
 from app.utils.fmt import parse_float                   # noqa: E402
 
 PASS = FAIL = 0
@@ -352,13 +351,13 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                                    "account_id": ids["cb1"], "voucher_type": "customer",
                                    "customer_id": ids["c1"], "amount": 15000,
                                    "description": "دفعة"})
-    rv2 = repo.save_receipt(conn, {"date": "2026-02-11", "account_kind": "bank",
+    repo.save_receipt(conn, {"date": "2026-02-11", "account_kind": "bank",
                                    "account_id": ids["bn1"], "voucher_type": "other",
                                    "amount": 700, "description": "خردة"})
     trips = {r["id"]: r for r in conn.execute(
         "SELECT id FROM invoice_trips WHERE invoice_id=? ORDER BY id", (inv1,))}
     trip_ids = list(trips)
-    pv_trip = repo.save_payment(conn, {"date": "2026-02-12", "account_kind": "cashbox",
+    repo.save_payment(conn, {"date": "2026-02-12", "account_kind": "cashbox",
                                        "account_id": ids["cb1"], "voucher_type": "trip",
                                        "trip_id": trip_ids[0], "amount": 400,
                                        "description": "رسوم تفريغ"})
@@ -366,16 +365,16 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                                        "account_id": ids["cb1"], "voucher_type": "advance",
                                        "employee_id": ids["d1"], "amount": 2000,
                                        "description": "سلفة"})
-    pv_adv2 = repo.save_payment(conn, {"date": "2026-02-14", "account_kind": "bank",
+    repo.save_payment(conn, {"date": "2026-02-14", "account_kind": "bank",
                                        "account_id": ids["bn1"], "voucher_type": "advance",
                                        "employee_id": ids["d2"], "amount": 1500,
                                        "description": "سلفة ثانية"})
-    pv_veh = repo.save_payment(conn, {"date": "2026-02-15", "account_kind": "bank",
+    repo.save_payment(conn, {"date": "2026-02-15", "account_kind": "bank",
                                       "account_id": ids["bn1"], "voucher_type": "vehicle",
                                       "vehicle_id": ids["v1"],
                                       "vehicle_expense": "tires", "amount": 2000,
                                       "description": "كاوتش"})
-    pv_gen = repo.save_payment(conn, {"date": "2026-02-16", "account_kind": "cashbox",
+    repo.save_payment(conn, {"date": "2026-02-16", "account_kind": "cashbox",
                                       "account_id": ids["cb2"], "voucher_type": "general",
                                       "amount": 800, "description": "كهرباء"})
     pay1 = repo.save_payroll(conn, {
@@ -383,7 +382,7 @@ def main() -> None:  # noqa: C901 — منظومة فحص
         "period_month": 2, "account_kind": "cashbox", "account_id": ids["cb1"],
         "base_salary": 4000, "additions": 500, "additions_note": "مكافأة",
         "other_deductions": 200, "settlements": [(pv_adv1, 1200)]})
-    pay2 = repo.save_payroll(conn, {
+    repo.save_payroll(conn, {
         "date": "2026-02-28", "employee_id": ids["a1"], "period_year": 2026,
         "period_month": 2, "account_kind": "bank", "account_id": ids["bn1"],
         "base_salary": 5000, "settlements": []})

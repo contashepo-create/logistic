@@ -321,10 +321,7 @@ def main() -> None:  # noqa: C901
         "SELECT id FROM financial_years WHERE year=2027").fetchone()["id"], "closed")
 
     outside = ["2025-12-31", "2028-01-01"]
-    inside = ["2026-06-15"]
     year26 = conn.execute("SELECT id FROM financial_years WHERE year=2026"
-                          ).fetchone()["id"]
-    year27 = conn.execute("SELECT id FROM financial_years WHERE year=2027"
                           ).fetchone()["id"]
     for d in outside:
         reject(f"فاتورة بتاريخ {d}", lambda d=d: repo.save_invoice(conn, {

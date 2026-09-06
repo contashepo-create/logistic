@@ -21,8 +21,7 @@ os.environ["LOGISTIC_HEADLESS"] = "1"
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog,
-    QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QApplication, QDialog, QDoubleSpinBox, QFileDialog, QMessageBox, QPushButton,
 )
 
 PASS = FAIL = 0
@@ -194,9 +193,7 @@ for mod in (W, P_ops, P_master, P_payroll, D_master):
     mod.info = lambda *a, **k: None
     mod.warn = lambda *a, **k: None
 
-from app.core.rules import RuleError as _RuleError  # noqa: F401
 
-from PySide6.QtWidgets import QTableWidget, QWidget as QW
 
 
 def click_all_row_buttons(page, label) -> None:

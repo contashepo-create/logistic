@@ -28,12 +28,10 @@ app = QApplication.instance() or QApplication([])
 
 from app.core import calc, db, repo          # noqa: E402
 
-from app.core.rules import RuleError         # noqa: E402
 from app.utils import fmt                    # noqa: E402
 
 PASS = 0
 FAILS: list[str] = []
-
 
 def check(name: str, cond: bool, extra: str = "") -> None:
     global PASS
@@ -44,21 +42,22 @@ def check(name: str, cond: bool, extra: str = "") -> None:
     PASS += 1
     print(f"✅ {name} {extra}")
 
-
 def eq(name: str, actual, expected) -> None:
     ok = abs(float(actual) - float(expected)) < 0.011
     check(name, ok, "" if ok else f"→ {actual} (المتوقع {expected})")
 
-
 def _silence_dialogs() -> None:
     """النوافذ المنبثقة (QMessageBox) تُعلّق الاختبار بلا شاشة — تُستبدل بدوال صامتة."""
-    import app.ui.dialogs_master, app.ui.dialogs_ops  # noqa: F401
-    import app.ui.dialogs_payroll, app.ui.dialogs_suppliers  # noqa: F401
-    import app.ui.page_settings, app.ui.pages_base  # noqa: F401
-    import app.ui.pages_master, app.ui.pages_ops  # noqa: F401
-    import app.ui.pages_payroll, app.ui.pages_reports  # noqa: F401
-    import app.ui.pages_suppliers, app.ui.pages_treasury  # noqa: F401
-    import app.ui.statements, app.ui.widgets  # noqa: F401
+    # استيراد كل وحدات الواجهة للتأكد من سلامة تحميلها (اختبار دخان)
+    import importlib
+    for _mod in ("app.ui.dialogs_master", "app.ui.dialogs_ops",
+                 "app.ui.dialogs_payroll", "app.ui.dialogs_suppliers",
+                 "app.ui.page_settings", "app.ui.pages_base",
+                 "app.ui.pages_master", "app.ui.pages_ops",
+                 "app.ui.pages_payroll", "app.ui.pages_reports",
+                 "app.ui.pages_suppliers", "app.ui.pages_treasury",
+                 "app.ui.statements"):
+        assert importlib.import_module(_mod).__name__.endswith(_mod.rsplit(".", 1)[1])
     for mod_name in list(sys.modules):
         if not mod_name.startswith("app.ui"):
             continue
@@ -67,7 +66,6 @@ def _silence_dialogs() -> None:
             if hasattr(mod, fn):
                 setattr(mod, fn, (lambda *a, **k: True) if fn == "confirm"
                         else (lambda *a, **k: None))
-
 
 def main() -> None:
     _silence_dialogs()
@@ -82,7 +80,6 @@ def main() -> None:
     repo.set_setting(conn, "vat_rate", "15")
 
     # ---------------- نوافذ الإدخال الحقيقية ----------------
-    from app.ui.dialogs_master import CustomerDialog
     from app.ui.dialogs_ops import CreditDebitNoteDialog, InvoiceDialog, PaymentDialog
     from app.ui.dialogs_suppliers import PurchaseInvoiceDialog, SupplierDialog
     from app.ui.pages_suppliers import DeductionDialog
@@ -278,7 +275,6 @@ def main() -> None:
               f"{'، '.join(FAILS)}")
         sys.exit(1)
     print(f"🎉 كل اختبارات الواجهة نجحت ({PASS} فحصاً).")
-
 
 if __name__ == "__main__":
     main()

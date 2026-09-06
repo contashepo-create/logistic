@@ -653,56 +653,6 @@ def customer_statement(conn, customer_id: int, d_from: str, d_to: str) -> dict:
     }
 
 
-def customer_allocations(conn, customer_id: int) -> dict:
-    """تخصيص تحصيلات العميل على فواتيره بالأقدمية (FIFO).
-
-    للعرض في كشف الحساب الموسّع: لكل فاتورة المسدَّد والمتبقي،
-    والدفعات غير المخصَّصة (زيادة عن قيمة الفواتير).
-    """
-    invoices = []
-    for r in _rows(
-        conn,
-        "SELECT id, number, date FROM invoices WHERE customer_id=? ORDER BY date, id",
-        (customer_id,),
-    ):
-        invoices.append({
-            "invoice_id": r["id"], "number": r["number"], "date": r["date"],
-            "total": round2(invoice_totals(conn, r["id"])["customer_total"]),
-            "paid": 0.0,
-        })
-    opening = float(_scalar(
-        conn, "SELECT opening_balance FROM customers WHERE id=?", (customer_id,)))
-    paid_total = float(_scalar(
-        conn,
-        "SELECT COALESCE(SUM(amount),0) FROM receipt_vouchers "
-        "WHERE voucher_type='customer' AND customer_id=?", (customer_id,)))
-    note_effect = sum(
-        note_total(n["amount"], n["vat_rate"]) * (1 if n["note_type"] == "debit" else -1)
-        for n in _rows(
-            conn, "SELECT note_type, amount, vat_rate FROM credit_debit_notes "
-                  "WHERE customer_id=?", (customer_id,)))
-    remaining = max(0.0, paid_total + min(0.0, opening) - min(0.0, note_effect))
-    by_receipt: list[dict] = []
-    for inv in invoices:
-        if remaining <= 0:
-            break
-        used = min(remaining, inv["total"])
-        inv["paid"] = round2(used)
-        remaining = round2(remaining - used)
-        by_receipt.append({**inv, "remaining": round2(inv["total"] - used)})
-    for inv in invoices:
-        if inv["id"] not in {b["invoice_id"] for b in by_receipt}:
-            by_receipt.append({**inv, "remaining": round2(inv["total"])})
-    by_receipt.sort(key=lambda x: (x["date"], x["number"]))
-    return {
-        "by_invoice": by_receipt,
-        "unallocated": round2(max(0.0, remaining)),
-        "total": round2(sum(i["total"] for i in invoices)),
-        "paid": round2(sum(i["paid"] for i in invoices)),
-        "remaining": round2(sum(i["remaining"] for i in by_receipt)),
-    }
-
-
 def account_statement(conn, kind: str, account_id: int, d_from: str, d_to: str) -> dict:
     """كشف حساب خزينة/بنك: كل حركات القبض والدفع والرواتب."""
     opening = account_balance(conn, kind, account_id, before=d_from)
@@ -1294,5 +1244,3 @@ def advance_archive_totals(rows: list[dict]) -> dict:
     return _archive_totals(rows)
 
 
-def deduction_archive_totals(rows: list[dict]) -> dict:
-    return _archive_totals(rows)

@@ -72,14 +72,6 @@ def backup_database(dest_dir: Path | None = None) -> Path:
     return dest_path
 
 
-def close_conn() -> None:
-    global _conn
-    if _conn is not None:
-        _conn.commit()
-        _conn.close()
-        _conn = None
-
-
 # ----------------------------------------------------------------------------
 # المخطط الكامل لقاعدة البيانات
 # ----------------------------------------------------------------------------

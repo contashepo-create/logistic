@@ -102,7 +102,7 @@ def main() -> None:
     cb = repo.save_account(conn, "cashbox", {"name": "الخزينة الرئيسية",
                                              "created_date": d("01-01"),
                                              "opening_balance": 100000, "notes": ""})
-    bnk = repo.save_account(conn, "bank", {"name": "بنك الراجحي",
+    repo.save_account(conn, "bank", {"name": "بنك الراجحي",
                                            "created_date": d("01-01"),
                                            "account_number": "1234567890",
                                            "iban": "SA00 8000 0000 6080 1016 7519",
@@ -255,7 +255,7 @@ def main() -> None:
                      "items": [{"item_name": "x", "qty": 1, "unit_price": 10}]}))
 
     # سداد للمورّد
-    pay_sup = repo.save_payment(conn, {
+    repo.save_payment(conn, {
         "date": d("04-01"), "account_kind": "cashbox", "account_id": cb,
         "voucher_type": "supplier", "supplier_id": sup,
         "purchase_invoice_id": pinv, "amount": 1350, "description": "سداد فاتورة"})
@@ -378,7 +378,7 @@ def main() -> None:
     eq("إشعار مدين شامل الضريبة", repo.get_credit_debit_note(conn, debit_note)["total"],
        1150)
     before = calc.customer_balance(conn, cust)
-    credit_note = repo.save_credit_debit_note(conn, {
+    repo.save_credit_debit_note(conn, {
         "note_type": "credit", "invoice_id": inv, "customer_id": cust,
         "date": d("05-25"), "amount": 500, "vat_rate": 15,
         "reason": "خصم تجاري"})

@@ -68,7 +68,7 @@ def main() -> None:
     driver = repo.save_employee(conn, {"name": "أحمد السائق", "nationality": "سعودي",
                                        "phone": "0500445566", "emp_type": "driver",
                                        "notes": ""})
-    admin = repo.save_employee(conn, {"name": "سالم الإداري", "nationality": "مصري",
+    repo.save_employee(conn, {"name": "سالم الإداري", "nationality": "مصري",
                                       "phone": "0500778899", "emp_type": "admin",
                                       "notes": ""})
     veh = repo.save_vehicle(conn, {"plate_number": "أ ب ج 123", "vehicle_type": "تريلة",
@@ -138,7 +138,7 @@ def main() -> None:
     # ---------------- سندات الدفع ----------------
     trips = conn.execute("SELECT id FROM invoice_trips WHERE invoice_id=? "
                          "ORDER BY id", (inv,)).fetchall()
-    trip1, trip2 = trips[0]["id"], trips[1]["id"]
+    trip2 = trips[1]["id"]
     repo.save_payment(conn, {"date": "2026-02-22", "account_kind": "cashbox",
                              "account_id": cb, "voucher_type": "trip",
                              "trip_id": trip2, "amount": 400,

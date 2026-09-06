@@ -131,14 +131,6 @@ def country_label(code) -> str:
     return COUNTRIES.get(str(code or ""), str(code or ""))
 
 
-def entity_label(value) -> str:
-    return ENTITY_TYPES.get(str(value or ""), str(value or ""))
-
-
-def tax_status_label(value) -> str:
-    return TAX_STATUSES.get(str(value or ""), str(value or ""))
-
-
 # ---------------------------------------------------------------------------
 # التحقّق الشامل والتطبيع
 # ---------------------------------------------------------------------------
@@ -194,22 +186,6 @@ def normalize_tax_profile(p: dict) -> dict:
             raise RuleError("الدولة غير صالحة.")
         out["country"] = country
     return out
-
-
-def vat_of(amount: float, rate: float) -> float:
-    """قيمة ضريبة القيمة المضافة لمبلغ قبل الضريبة."""
-    return round2((float(amount or 0) * float(rate or 0)) / 100.0)
-
-
-def with_vat(amount: float, rate: float) -> float:
-    """الإجمالي شامل الضريبة."""
-    return round2(float(amount or 0) + vat_of(amount, rate))
-
-
-def net_of_vat(gross: float, rate: float) -> float:
-    """استخراج الصافي من مبلغ شامل الضريبة."""
-    rate = float(rate or 0) / 100.0
-    return round2(float(gross or 0) / (1 + rate)) if rate > -1 else round2(gross)
 
 
 def round2(value) -> float:

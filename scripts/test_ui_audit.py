@@ -25,15 +25,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["LOGISTIC_DATA_DIR"] = tempfile.mkdtemp(prefix="logistic_uiaudit_")
 os.environ["LOGISTIC_HEADLESS"] = "1"
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QLineEdit,
-    QMessageBox, QPushButton, QTabWidget,
+    QApplication, QDialog, QFileDialog, QMessageBox, QPushButton,
 )
 
 PASS = FAIL = 0
 FAILURES: list[str] = []
-
 
 def check(name: str, cond: bool, extra: str = "") -> None:
     global PASS, FAIL
@@ -44,10 +42,8 @@ def check(name: str, cond: bool, extra: str = "") -> None:
         FAILURES.append(f"{name} {extra}")
         print(f"  ❌ {name} {extra}")
 
-
 def step(t: str) -> None:
     print(f"== {t}", flush=True)
-
 
 app = QApplication(sys.argv)
 app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
@@ -60,25 +56,21 @@ def _no(*a, **k):
 for fn in ("information", "warning", "critical", "about", "question"):
     setattr(QMessageBox, fn, staticmethod(_no))
 
-
 def _nb_exec(self):
     self.show()
     app.processEvents()
     self.close()
     return QDialog.DialogCode.Accepted
 
-
 QDialog.exec = _nb_exec
 EXPORT_DIR = Path(tempfile.mkdtemp(prefix="uiaudit_out_"))
 EXPORTED: list[Path] = []
 from app.utils import exporter
 
-
 def _fake_path(parent, default_name, filters):
     out = EXPORT_DIR / f"{len(EXPORTED):03d}_{default_name}"
     EXPORTED.append(out)
     return str(out)
-
 
 exporter._ask_save_path = _fake_path
 exporter._ask_overwrite = lambda p, x: True
@@ -387,7 +379,6 @@ check("قيمة سالبة في بطاقة الإجماليات تعمل", "1,23
 inv_page = pages["فواتير النقل"]
 inv_page.refresh()
 if inv_page.table.rowCount():
-    from PySide6.QtCore import QModelIndex
     inv_page.table.doubleClicked.emit(inv_page.table.model().index(0, 0))
     app.processEvents()
     check("نقرة مزدوجة تفتح العرض بلا تعليق", True)

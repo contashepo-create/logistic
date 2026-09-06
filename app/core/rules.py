@@ -62,12 +62,6 @@ def safe_financial_year(date_from, date_to) -> tuple[str, str, int]:
 # ---------------------------------------------------------------------------
 # قاعدة السنوات المالية
 # ---------------------------------------------------------------------------
-def open_years(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM financial_years WHERE status = 'open' ORDER BY date_from"
-    ).fetchall()
-
-
 def date_in_open_year(conn: sqlite3.Connection, date_str: str) -> bool:
     """هل التاريخ يقع داخل نطاق سنة مالية مفتوحة؟"""
     safe_iso_date(date_str, "تاريخ الحركة")
@@ -99,12 +93,6 @@ def ensure_movement_editable(conn: sqlite3.Connection, old_date: str,
         )
     if new_date is not None and new_date != old_date:
         ensure_date_in_open_year(conn, new_date)
-
-
-def has_open_year(conn: sqlite3.Connection) -> bool:
-    return conn.execute(
-        "SELECT COUNT(*) AS c FROM financial_years WHERE status='open'"
-    ).fetchone()["c"] > 0
 
 
 # ---------------------------------------------------------------------------

@@ -550,12 +550,6 @@ def delete_vehicle(conn, vehicle_id: int) -> None:
 # ---------------------------------------------------------------------------
 # الخزائن والبنوك
 # ---------------------------------------------------------------------------
-def list_accounts(conn, kind: str) -> list[sqlite3.Row]:
-    return conn.execute(
-        f"SELECT * FROM {calc.account_table(kind)} ORDER BY code"
-    ).fetchall()
-
-
 def get_account(conn, kind: str, account_id: int) -> sqlite3.Row | None:
     return conn.execute(
         f"SELECT * FROM {calc.account_table(kind)} WHERE id=?", (account_id,)
@@ -1741,11 +1735,6 @@ def list_credit_debit_notes(conn, d_from=None, d_to=None,
                 "JOIN invoice_trips t ON t.id=l.trip_id WHERE l.note_id=?", (d["id"],))]
         out.append(d)
     return out
-
-
-def list_credit_debit_notes_for_invoice(conn, invoice_id: int) -> list[dict]:
-    return [n for n in list_credit_debit_notes(conn)
-            if n["invoice_id"] == invoice_id]
 
 
 def get_credit_debit_note(conn, note_id: int) -> dict | None:
