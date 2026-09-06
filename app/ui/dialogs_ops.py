@@ -138,8 +138,8 @@ class ExpenseDialog(FormDialog):
         self.source_combo.currentIndexChanged.connect(self._source_changed)
         self.add_row("مصدر التمويل *", self.source_combo)
         self.hint_label = QLabel("")
+        self.hint_label.setObjectName("mutedText")
         self.hint_label.setWordWrap(True)
-        self.hint_label.setStyleSheet("color:#6b7280; font-size:9pt")
         self.add_row("", self.hint_label)
 
         self.account_combo = AccountCombo()

@@ -151,8 +151,8 @@ class SettingsPage(QWidget):
         self.accent_edit.setPlaceholderText("#1f4e79")
         pf.addRow("لون الهوية", self.accent_edit)
         self.template_hint = QLabel("")
+        self.template_hint.setObjectName("mutedText")
         self.template_hint.setWordWrap(True)
-        self.template_hint.setStyleSheet("color:#64748b;font-size:9pt")
         pf.addRow("", self.template_hint)
         self._show_template_hint()
         self.frame.add_widget(print_box, stretch=0)
@@ -167,12 +167,14 @@ class SettingsPage(QWidget):
             cb.setChecked(features.has_feature(conn, key))
             fv.addWidget(cb)
             hint = QLabel(label["description"])
+            hint.setObjectName("mutedText")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#64748b;font-size:9pt;padding-right:22px")
+            hint.setStyleSheet("padding-right:22px")
             fv.addWidget(hint)
             self.feature_checks[key] = cb
         note = QLabel("الفاتورة الضريبية معطّلة افتراضياً — لا تُفعَّل إلا بقرارك.")
-        note.setStyleSheet("color:#92400e;font-size:9pt")
+        note.setObjectName("noteWarn")
+        note.setWordWrap(True)
         fv.addWidget(note)
         self.frame.add_widget(feat_box, stretch=0)
 
@@ -306,11 +308,11 @@ class SettingsPage(QWidget):
             invoice_type="simplified", date="x")
         if missing:
             self.zatca_label.setText("⚠️ ناقص لرمز زاتكا: " + "، ".join(missing))
-            self.zatca_label.setStyleSheet("color:#b45309")
+            self.zatca_label.setObjectName("textWarn")
         else:
             self.zatca_label.setText("✅ البيانات مكتملة لإصدار فاتورة زاتكا "
                                      "مع رمز الاستجابة السريعة.")
-            self.zatca_label.setStyleSheet("color:#15803d")
+            self.zatca_label.setObjectName("textOk")
 
     def save(self) -> None:
         conn = db.get_conn()
