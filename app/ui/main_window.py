@@ -99,7 +99,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} — v{__version__}")
-        self.resize(1360, 800)
+        self._fit_window_to_screen()
+        self.setMinimumSize(1024, 620)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -245,6 +246,17 @@ class MainWindow(QMainWindow):
                 self.telegram_bot = bot
         except Exception:  # noqa: BLE001
             self.telegram_bot = None
+
+    def _fit_window_to_screen(self) -> None:
+        """حجم افتتاحي مناسب لا يتجاوز الشاشة (مع مراعاة شريط المهام)."""
+        from PySide6.QtWidgets import QApplication
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            self.resize(min(1360, avail.width()),
+                        min(800, avail.height()))
+        except Exception:  # noqa: BLE001
+            self.resize(1280, 760)
 
     def closeEvent(self, event) -> None:
         """إيقاف خيط البوت قبل الإغلاق حتى لا يبقى معلقاً."""
