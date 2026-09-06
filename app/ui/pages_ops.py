@@ -18,7 +18,8 @@ from .dialogs_ops import (
 )
 from .pages_base import CrudPage
 from .widgets import (
-    DataTable, DictCombo, FlowLayout, TotalsBar, VDateEdit, confirm, warn,
+    DataTable, DictCombo, FlowLayout, TotalsBar, VDateEdit, add_shadow,
+    confirm, warn,
 )
 
 
@@ -38,6 +39,7 @@ class FilterRow(QWidget):
         self._lay = FlowLayout(margin=0, spacing=10)
         card.setLayout(self._lay)
         card.setStyleSheet("#filterCard { padding: 10px 14px; }")
+        add_shadow(card, blur=12, alpha=20, dy=1)
         outer.addWidget(card)
 
         self.from_edit = VDateEdit()
@@ -122,7 +124,8 @@ class InvoicesPage(CrudPage):
         ))
         self.totals = TotalsBar(["إجمالي النقلات", "إجمالي المصروفات المباشرة",
                                  "إجمالي الأرباح الفعلية"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):
@@ -209,7 +212,8 @@ class ReceiptsPage(CrudPage):
             ["رقم السند", "التاريخ", "النوع", "العميل / المصدر", "أودع في",
              "المبلغ", "البيان"]))
         self.totals = TotalsBar(["إجمالي المقبوضات", "تحصيل من عملاء", "إيرادات أخرى"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):
@@ -281,7 +285,8 @@ class PaymentsPage(CrudPage):
         self.set_table(DataTable(
             ["رقم السند", "التاريخ", "النوع", "التوجيه", "صرف من", "المبلغ", "البيان"]))
         self.totals = TotalsBar(["إجمالي المدفوعات"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         return self
 
     def fetch(self):

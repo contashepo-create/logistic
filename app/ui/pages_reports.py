@@ -82,7 +82,8 @@ class TripProfitsReportPage(ReportPage):
         self.frame.add_widget(self.table)
         self.totals = TotalsBar(["الإيرادات", "المصاريف المباشرة",
                                  "المصاريف اللاحقة", "صافي الأرباح الفعلية"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         self._export_table = self.table
         self._data: list[dict] = []
         self.load()
@@ -135,7 +136,8 @@ class CustomerStatementReportPage(ReportPage):
         self.frame.add_widget(self.table)
         self.totals = TotalsBar(["الرصيد الافتتاحي", "إجمالي الفواتير",
                                  "إجمالي التحصيل", "الرصيد الحالي"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         self._export_table = self.table
         self._st: dict = {}
         self.load()
@@ -210,7 +212,8 @@ class EmployeeStatementReportPage(ReportPage):
 
         self.totals = TotalsBar(["إجمالي الرواتب الصافية", "إجمالي السلف",
                                  "المتبقي من السلف", "إجمالي بدلات التريب"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         self._st: dict = {}
         self.load()
 
@@ -289,7 +292,8 @@ class VehiclesReportPage(ReportPage):
         self.frame.add_widget(self.table)
         self.totals = TotalsBar(["الإيرادات", "المصروفات المباشرة",
                                  "الصيانة", "صافي الربحية"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         self._export_table = self.table
         self._data: list[dict] = []
         self.load()
@@ -342,7 +346,8 @@ class PnlReportPage(ReportPage):
         self.frame.add_widget(self.table)
         self.totals = TotalsBar(["إجمالي الإيرادات", "إجمالي المصروفات",
                                  "صافي الربح / الخسارة"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         self._export_table = self.table
         self._data: dict = {}
         self.load()
@@ -420,7 +425,8 @@ class AgingReportPage(ReportPage):
         self.tabs.addTab(self.cust_table, "👥 ديون العملاء (ما لنا)")
         self.totals = TotalsBar(["حتى 30 يوم", "31 – 60", "61 – 90",
                                  "أكثر من 90", "الإجمالي"])
-        self.frame.add_widget(self.totals, stretch=0)
+        # بطاقات المؤشرات فوق الجدول (أسلوب لوحات التحكم الحديثة)
+        self.frame.body.insertWidget(1, self.totals)
         # يُربط بعد إنشاء كل الأدوات حتى لا يُستدعى load() قبل اكتمال البناء
         self.tabs.currentChanged.connect(lambda _: self.load())
         self.load()

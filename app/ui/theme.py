@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-ثيم التطبيق الحديث: نظام ألوان احترافي + ورقة أنماط QSS بأسلوب لوحات
-التحكم الحديثة (Design System موحّد لكل مكوّنات الواجهة).
+ثيم التطبيق الحديث بأسلوب لوحات تحكم React (shadcn/Tailwind-style):
+شريط جانبي أبيض نظيف، لون أساسي نيلي (Indigo)، خلفية رمادية فاتحة،
+بطاقات بيضاء بحواف دائرية كبيرة وحدود ناعمة، جداول بلا خطوط شبكية عمياء.
 
-لوحة الألوان (مستوحاة من أنظمة التصميم الحديثة):
-  - أساسي أزرق نابض        PRIMARY   #2563eb
-  - خلفية رمادية فاتحة      BG        #eef1f6
-  - بطاقات بيضاء            CARD      #ffffff
-  - شريط جانبي كحلي داكن    SIDEBAR   #0d1b2e
-  - نص داكن / نص خافت       TEXT / MUTED
-  - ألوان حالة: أخضر / أحمر / كهرماني / بنفسجي
+الرموز اللونية (Design Tokens):
+  PRIMARY  #6366f1  نيلي حيوي (أزرار/تحديد/روابط)
+  BG       #f6f7fb  خلفية التطبيق
+  CARD     #ffffff  البطاقات
+  SIDEBAR  #ffffff  الشريط الجانبي الأبيض بفاصل ناعم
 """
 from __future__ import annotations
+
+import os
+import tempfile
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
@@ -20,36 +22,38 @@ from PySide6.QtWidgets import QApplication
 from ..utils.fonts import pick_font_family
 
 # ---------------------------------------------------------------------------
-# الرموز اللونية (Design Tokens)
+# الرموز اللونية
 # ---------------------------------------------------------------------------
-PRIMARY = "#2563eb"          # الأزرق الأساسي (أزرق نابض حديث)
-PRIMARY_DARK = "#1e4fc4"     # عند الضغط
-PRIMARY_DEEP = "#1b3a8f"     # تدرّج غامق
-PRIMARY_SOFT = "#eaf1fe"     # خلفية زرقاء ناعمة
-BORDER_STRONG = "#c4d7f7"    # حدود زرقاء للعناصر المحددة
+PRIMARY = "#6366f1"          # النيلي الأساسي
+PRIMARY_DARK = "#4f46e5"     # عند الضغط / النصوص فوق الخلفيات الناعمة
+PRIMARY_DEEP = "#4338ca"     # تدرّج غامق
+PRIMARY_SOFT = "#eef2ff"     # خلفية نيلية ناعمة (تحديد، عناصر نشطة)
+BORDER_STRONG = "#c7d2fe"    # حدود نيلية للعناصر المحددة
 
-BG = "#eef1f6"               # خلفية الصفحة
+BG = "#f6f7fb"               # خلفية الصفحة
 CARD = "#ffffff"             # خلفية البطاقات
-SURFACE = "#f8fafc"          # سطح خفيف داخل البطاقات
-BORDER = "#e3e8ef"           # الحدود العامة
+SURFACE = "#f8fafc"          # سطح خفيف
+BORDER = "#e5e7eb"           # الحدود العامة
 
-TEXT = "#101828"             # النص الأساسي
-TEXT_SOFT = "#475467"        # نص ثانوي
-MUTED = "#8493a8"            # نص خافت
+TEXT = "#111827"             # النص الأساسي
+TEXT_SOFT = "#374151"        # نص ثانوي
+MUTED = "#6b7280"            # نص خافت
+FAINT = "#9ca3af"            # نص أخفت (عناوين الأقسام)
 
-DANGER = "#d92d20"           # أحمر (حذف / أرصدة سالبة)
-DANGER_SOFT = "#fef3f2"
-DANGER_BORDER = "#fecdca"
-SUCCESS = "#12b76a"          # أخضر (تحقق / أرصدة موجبة)
-SUCCESS_SOFT = "#ecfdf3"
-WARNING = "#dc6803"          # كهرماني (تحرير / تنبيه)
-WARNING_SOFT = "#fffaeb"
-VIOLET = "#7a5af8"           # بنفسجي (كشوف / أدوات)
-VIOLET_SOFT = "#f4f3ff"
+DANGER = "#e02424"           # أحمر (حذف / سالب)
+DANGER_SOFT = "#fef2f2"
+DANGER_BORDER = "#fecaca"
+SUCCESS = "#0e9f6e"          # أخضر (موجب / حفظ)
+SUCCESS_SOFT = "#ecfdf5"
+SUCCESS_DEEP = "#046c4e"
+WARNING = "#d97706"          # كهرماني (تعديل)
+WARNING_SOFT = "#fffbeb"
+VIOLET = "#7c3aed"           # بنفسجي (كشوف / أدوات)
+VIOLET_SOFT = "#f5f3ff"
 
-SIDEBAR = "#0d1b2e"          # الشريط الجانبي الكحلي
-SIDEBAR_EDGE = "#16273f"     # خط فاصل داخل الشريط
-ON_SIDEBAR = "#c3cfdf"       # نص عناصر الشريط
+SIDEBAR = "#ffffff"          # الشريط الجانبي الأبيض
+SIDEBAR_EDGE = "#e5e7eb"     # خط الفاصل
+ON_SIDEBAR = "#374151"       # نص عناصر الشريط
 
 # ---------------------------------------------------------------------------
 # ورقة الأنماط الموحّدة
@@ -68,46 +72,46 @@ QWidget#page {{
     border-radius: 16px;
 }}
 
-/* ================= الشريط الجانبي ================= */
+/* ================= الشريط الجانبي (أبيض نظيف) ================= */
 QFrame#sidebar {{
-    background: qlineargradient(y1:0, y2:1, stop:0 #0d1b2e, stop:1 #10233d);
-    border: none;
+    background: {SIDEBAR};
+    border: none; border-left: 1px solid {BORDER};
 }}
-QLabel#brandName  {{ color: #ffffff; font-size: 13pt; font-weight: bold; background: transparent; }}
-QLabel#brandSub   {{ color: #7d93b5; font-size: 8.5pt; background: transparent; }}
+QLabel#brandName  {{ color: {TEXT}; font-size: 12.5pt; font-weight: bold;
+                     background: transparent; }}
+QLabel#brandSub   {{ color: {MUTED}; font-size: 8.5pt; background: transparent; }}
 QLabel#brandBadge {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 #2563eb, stop:1 #4f8bff);
+                                stop:0 #6366f1, stop:1 #818cf8);
     color: white; border-radius: 12px; font-size: 15pt;
 }}
-QFrame#navSeparator {{ background: {SIDEBAR_EDGE}; border: none; max-height: 1px; }}
+QFrame#navSeparator {{ background: #f3f4f6; border: none; max-height: 1px; }}
 
 QListWidget#nav {{
     background: transparent; border: none; font-size: 10.5pt; outline: 0;
-    padding: 4px 2px;
+    padding: 2px;
 }}
 QListWidget#nav::item {{
-    color: {ON_SIDEBAR}; padding: 10px 14px; margin: 2px 8px;
+    color: {ON_SIDEBAR}; padding: 10px 14px; margin: 2px 6px;
     border-radius: 10px;
 }}
-QListWidget#nav::item:hover {{ background: rgba(255, 255, 255, 0.07); }}
+QListWidget#nav::item:hover {{ background: #f3f4f6; color: {TEXT}; }}
 QListWidget#nav::item:selected {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 #2563eb, stop:1 #3f7af5);
-    color: white; font-weight: bold;
+    background: {PRIMARY_SOFT}; color: {PRIMARY_DARK}; font-weight: bold;
+    border-left: none;
 }}
 QListWidget#nav::item:disabled {{
-    color: #647d9d; font-weight: bold; font-size: 8.5pt;
-    background: transparent; margin: 12px 8px 2px 8px; padding: 2px 6px;
+    color: {FAINT}; font-weight: bold; font-size: 8.5pt;
+    background: transparent; margin: 12px 6px 2px 6px; padding: 2px 8px;
 }}
 
 QFrame#navFooter {{
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: {SURFACE};
+    border: 1px solid {BORDER};
     border-radius: 12px;
 }}
-QLabel#navFooterTitle {{ color: #7d93b5; font-size: 8.5pt; background: transparent; }}
-QLabel#navFooterValue {{ color: #e6edf6; font-size: 10pt; font-weight: bold;
+QLabel#navFooterTitle {{ color: {MUTED}; font-size: 8.5pt; background: transparent; }}
+QLabel#navFooterValue {{ color: {TEXT}; font-size: 10pt; font-weight: bold;
                           background: transparent; }}
 
 /* ================= الشريط العلوي ================= */
@@ -128,7 +132,7 @@ QLabel#chipAccent {{
 
 /* ================= ترويسة الصفحة ================= */
 QFrame#titleAccent {{
-    background: qlineargradient(y1:0, y2:1, stop:0 #2563eb, stop:1 #67a1ff);
+    background: qlineargradient(y1:0, y2:1, stop:0 #818cf8, stop:1 #6366f1);
     border-radius: 3px; max-width: 6px;
 }}
 QLabel#pageTitle {{ font-size: 16pt; font-weight: bold; color: {TEXT}; }}
@@ -143,50 +147,50 @@ QPushButton {{
     background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px;
     padding: 8px 16px; font-size: 10.5pt; color: {TEXT_SOFT};
 }}
-QPushButton:hover {{ background: {SURFACE}; border-color: #cfd8e3; }}
-QPushButton:pressed {{ background: #eef2f7; }}
-QPushButton:disabled {{ color: {MUTED}; background: #f2f4f7; border-color: {BORDER}; }}
+QPushButton:hover {{ background: {SURFACE}; border-color: #d1d5db; }}
+QPushButton:pressed {{ background: #f1f3f7; }}
+QPushButton:disabled {{ color: {FAINT}; background: #f3f4f6; border-color: {BORDER}; }}
 
 QPushButton#primary {{
-    background: qlineargradient(y1:0, y2:1, stop:0 #2f6ef0, stop:1 #2563eb);
+    background: qlineargradient(y1:0, y2:1, stop:0 #7378f2, stop:1 #6366f1);
     color: white; border: none; font-weight: bold; padding: 9px 20px;
 }}
 QPushButton#primary:hover {{
-    background: qlineargradient(y1:0, y2:1, stop:0 #4a80f3, stop:1 #2f6ef0);
+    background: qlineargradient(y1:0, y2:1, stop:0 #8286f4, stop:1 #7378f2);
 }}
 QPushButton#primary:pressed {{ background: {PRIMARY_DARK}; }}
-QPushButton#primary:disabled {{ color: #d6e2fb; background: #9db8ea; }}
+QPushButton#primary:disabled {{ color: #dfe3ff; background: #b1b5f5; }}
 
 QPushButton#danger {{
     background: {DANGER_SOFT}; color: {DANGER};
     border: 1px solid {DANGER_BORDER}; border-radius: 10px; padding: 8px 18px;
 }}
-QPushButton#danger:hover {{ background: #fde4e2; }}
+QPushButton#danger:hover {{ background: #fee2e2; }}
 
 QPushButton#success {{
-    background: {SUCCESS_SOFT}; color: #037947;
-    border: 1px solid #a9e5c7; border-radius: 10px; padding: 8px 18px;
+    background: {SUCCESS_SOFT}; color: {SUCCESS_DEEP};
+    border: 1px solid #a7f3d0; border-radius: 10px; padding: 8px 18px;
 }}
-QPushButton#success:hover {{ background: #d6f5e4; }}
+QPushButton#success:hover {{ background: #d1fae5; }}
 
-/* --- أزرار العمليات داخل الجداول (أيقونية ملونة) --- */
+/* --- أزرار العمليات داخل الجداول (حبوب أيقونية ملوّنة) --- */
 QPushButton#rowBtn, QPushButton#rowBtnEdit, QPushButton#rowBtnExtra,
 QPushButton#rowBtnPrint, QPushButton#rowBtnMoney, QPushButton#rowBtnDanger {{
     border: none; border-radius: 8px; font-size: 10.5pt; padding: 4px;
 }}
 QPushButton#rowBtn      {{ background: {PRIMARY_SOFT}; color: {PRIMARY_DARK}; }}
-QPushButton#rowBtn:hover {{ background: #d8e6fd; }}
+QPushButton#rowBtn:hover {{ background: #e0e7ff; }}
 QPushButton#rowBtnEdit {{ background: {WARNING_SOFT}; color: {WARNING}; }}
-QPushButton#rowBtnEdit:hover {{ background: #fdf0cf; }}
+QPushButton#rowBtnEdit:hover {{ background: #fef3c7; }}
 QPushButton#rowBtnExtra {{ background: {VIOLET_SOFT}; color: {VIOLET}; }}
-QPushButton#rowBtnExtra:hover {{ background: #e9e5ff; }}
+QPushButton#rowBtnExtra:hover {{ background: #ede9fe; }}
 QPushButton#rowBtnPrint {{ background: {SURFACE}; color: {TEXT_SOFT};
                            border: 1px solid {BORDER}; }}
-QPushButton#rowBtnPrint:hover {{ background: #e9edf3; }}
-QPushButton#rowBtnMoney {{ background: {SUCCESS_SOFT}; color: #037947; }}
-QPushButton#rowBtnMoney:hover {{ background: #d6f5e4; }}
+QPushButton#rowBtnPrint:hover {{ background: #eef0f4; }}
+QPushButton#rowBtnMoney {{ background: {SUCCESS_SOFT}; color: {SUCCESS_DEEP}; }}
+QPushButton#rowBtnMoney:hover {{ background: #d1fae5; }}
 QPushButton#rowBtnDanger {{ background: {DANGER_SOFT}; color: {DANGER}; }}
-QPushButton#rowBtnDanger:hover {{ background: #fde4e2; }}
+QPushButton#rowBtnDanger:hover {{ background: #fee2e2; }}
 
 /* --- مجموعة أدوات التصدير --- */
 QFrame#exportGroup {{
@@ -194,14 +198,14 @@ QFrame#exportGroup {{
     border-radius: 12px; padding: 3px;
 }}
 QPushButton#btnExcel {{ background: transparent; border: none; border-radius: 9px;
-                        padding: 7px 14px; color: #039b5e; font-weight: 600; }}
-QPushButton#btnExcel:hover {{ background: #dcf5e9; }}
+                        padding: 7px 14px; color: {SUCCESS}; font-weight: 600; }}
+QPushButton#btnExcel:hover {{ background: #d1fae5; }}
 QPushButton#btnPdf   {{ background: transparent; border: none; border-radius: 9px;
                         padding: 7px 14px; color: {DANGER}; font-weight: 600; }}
-QPushButton#btnPdf:hover {{ background: #fde6e4; }}
+QPushButton#btnPdf:hover {{ background: #fee2e2; }}
 QPushButton#btnPrint {{ background: transparent; border: none; border-radius: 9px;
                         padding: 7px 14px; color: {TEXT_SOFT}; font-weight: 600; }}
-QPushButton#btnPrint:hover {{ background: #e9edf3; }}
+QPushButton#btnPrint:hover {{ background: #eef0f4; }}
 
 /* ================= حقول الإدخال ================= */
 QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox, QDoubleSpinBox, QTextEdit,
@@ -212,15 +216,15 @@ QPlainTextEdit {{
 }}
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover, QSpinBox:hover,
 QDoubleSpinBox:hover, QTextEdit:hover, QPlainTextEdit:hover {{
-    border-color: #cfd8e3;
+    border-color: #d1d5db;
 }}
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTimeEdit:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-    border: 1px solid {PRIMARY}; background: #fdfeff;
+    border: 1px solid {PRIMARY}; background: #fdfdff;
 }}
 QLineEdit:disabled, QComboBox:disabled, QDateEdit:disabled,
 QSpinBox:disabled, QDoubleSpinBox:disabled {{
-    color: {MUTED}; background: #f4f6f9;
+    color: {FAINT}; background: #f5f6f8;
 }}
 QComboBox::drop-down {{ width: 28px; border: none; }}
 QComboBox QAbstractItemView {{
@@ -234,30 +238,28 @@ QDateEdit::drop-down {{ width: 26px; border: none; }}
 
 QTextEdit {{ line-height: 1.45; }}
 
-/* ================= الجداول ================= */
+/* ================= الجداول (بلا خطوط شبكية عمياء) ================= */
 QTableWidget, QTableView {{
-    border: 1px solid {BORDER}; border-radius: 12px;
-    background: white; alternate-background-color: #fafbfd;
-    gridline-color: #f0f3f8; font-size: 10.5pt; color: {TEXT};
+    border: none; border-radius: 12px;
+    background: white; alternate-background-color: #fcfcfd;
+    gridline-color: transparent; font-size: 10.5pt; color: {TEXT};
     selection-background-color: {PRIMARY_SOFT}; selection-color: {TEXT};
 }}
 QTableWidget::item, QTableView::item {{
-    padding: 6px 10px; border-bottom: 1px solid #f2f5f9;
+    padding: 6px 10px; border-bottom: 1px solid #f1f3f7;
 }}
+QTableWidget::item:hover, QTableView::item:hover {{ background: #f5f6ff; }}
 QTableWidget::item:selected, QTableView::item:selected {{
     background: {PRIMARY_SOFT}; color: {TEXT};
 }}
 QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{
-    background: {SURFACE}; color: {TEXT_SOFT}; font-weight: bold;
+    background: #fafbfc; color: {MUTED}; font-weight: bold;
     font-size: 10pt; padding: 11px 8px; border: none;
     border-bottom: 2px solid {BORDER};
 }}
-QTableCornerButton::section {{
-    background: {SURFACE}; border: none;
-    border-bottom: 2px solid {BORDER};
-}}
-QTableView QTableCornerButton::section {{ background: {SURFACE}; }}
+QTableCornerButton::section {{ background: #fafbfc; border: none;
+                               border-bottom: 2px solid {BORDER}; }}
 
 /* ================= التبويبات ================= */
 QTabWidget::pane {{
@@ -267,10 +269,10 @@ QTabBar::tab {{
     background: transparent; color: {TEXT_SOFT}; padding: 9px 20px;
     font-size: 10.5pt; margin: 3px 2px; border-radius: 9px;
 }}
-QTabBar::tab:hover {{ background: #e9edf3; }}
+QTabBar::tab:hover {{ background: #f3f4f6; }}
 QTabBar::tab:selected {{
-    background: white; color: {PRIMARY_DARK}; font-weight: bold;
-    border: 1px solid {BORDER}; border-bottom: 2px solid {PRIMARY};
+    background: {PRIMARY_SOFT}; color: {PRIMARY_DARK}; font-weight: bold;
+    border: none; border-bottom: 2px solid {PRIMARY};
 }}
 
 /* ================= المجموعات (GroupBox) ================= */
@@ -286,18 +288,18 @@ QGroupBox::title {{
 /* ================= أشرطة التمرير ================= */
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{
-    background: #c6cfdc; border-radius: 5px; min-height: 32px;
+    background: #d7dbe2; border-radius: 5px; min-height: 32px;
 }}
-QScrollBar::handle:vertical:hover {{ background: #a9b6c6; }}
+QScrollBar::handle:vertical:hover {{ background: #b9bfc9; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle:horizontal {{
-    background: #c6cfdc; border-radius: 5px; min-width: 32px;
+    background: #d7dbe2; border-radius: 5px; min-width: 32px;
 }}
-QScrollBar::handle:horizontal:hover {{ background: #a9b6c6; }}
+QScrollBar::handle:horizontal:hover {{ background: #b9bfc9; }}
 
-/* ================= شرائح الفلاتر والبطاقات التحليلية ================= */
+/* ================= بطاقات الفلاتر والمؤشرات ================= */
 QFrame#filterCard {{
     background: {SURFACE}; border: 1px solid {BORDER};
     border-radius: 12px;
@@ -321,11 +323,7 @@ QLabel#totalValueNeg {{ font-size: 13pt; font-weight: bold; color: {DANGER}; }}
 QMessageBox {{ background: white; }}
 QMessageBox QLabel {{ color: {TEXT}; font-size: 11pt; min-width: 280px; }}
 
-QStatusBar {{
-    background: {CARD}; color: {MUTED};
-    border-top: 1px solid {BORDER};
-}}
-QToolBar {{ background: {CARD}; border-bottom: 1px solid {BORDER}; }}
+QStatusBar {{ background: {CARD}; color: {MUTED}; border-top: 1px solid {BORDER}; }}
 
 QMenu {{
     background: white; border: 1px solid {BORDER}; border-radius: 10px; padding: 4px;
@@ -335,7 +333,7 @@ QMenu::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY_DARK}; }}
 
 QCheckBox {{ color: {TEXT_SOFT}; font-size: 10.5pt; spacing: 8px; }}
 QCheckBox::indicator {{
-    width: 18px; height: 18px; border: 1px solid {BORDER}; border-radius: 5px;
+    width: 18px; height: 18px; border: 1px solid #d1d5db; border-radius: 5px;
     background: white;
 }}
 QCheckBox::indicator:checked {{
@@ -357,11 +355,8 @@ QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
 
 def _make_checkmark_png() -> str:
     """توليد علامة ✓ بيضاء صغيرة لصناديق الاختيار (تُرسم وقت التشغيل)."""
-    import os
-    import tempfile
-
     from PySide6.QtCore import QSize
-    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+    from PySide6.QtGui import QImage, QPainter, QPen
 
     img = QImage(QSize(18, 18), QImage.Format.Format_ARGB32)
     img.fill(Qt.GlobalColor.transparent)

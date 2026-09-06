@@ -571,25 +571,38 @@ class PageFrame(QWidget):
 # ---------------------------------------------------------------------------
 # شريط الإجماليات — بطاقات مؤشرات (KPI) حديثة
 # ---------------------------------------------------------------------------
-KPI_ACCENTS = ["#2563eb", "#12b76a", "#7a5af8", "#dc6803", "#d92d20",
-               "#0e9384", "#cd4ba6"]
+KPI_ACCENTS = ["#4f46e5", "#0e9f6e", "#7c3aed", "#d97706", "#e02424",
+               "#0e7490", "#c026d3"]
+
+
+def add_shadow(widget, blur: int = 16, alpha: int = 30, dy: int = 2) -> None:
+    """ظل ناعم حول البطاقات (QSS لا يدعم box-shadow في كيوت)."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+
+    eff = QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(blur)
+    eff.setOffset(0, dy)
+    eff.setColor(QColor(17, 24, 39, alpha))
+    widget.setGraphicsEffect(eff)
 
 
 class TotalsBar(QWidget):
-    """بطاقات إجماليات أسفل الشاشة: عنوان صغير خافت + قيمة كبيرة بارزة."""
+    """بطاقات إجماليات (KPI): عنوان صغير خافت + قيمة كبيرة بارزة + ظل ناعم."""
 
     def __init__(self, labels: list[str], parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(12)
         self._values: dict[str, QLabel] = {}
         self._accents: dict[str, str] = {}
         for i, text in enumerate(labels):
             card = QFrame()
             card.setObjectName("kpiCard")
+            add_shadow(card, blur=14, alpha=26, dy=2)
             box = QVBoxLayout(card)
-            box.setContentsMargins(12, 10, 12, 10)
+            box.setContentsMargins(14, 10, 14, 10)
             box.setSpacing(4)
             caption = QLabel(text)
             caption.setObjectName("kpiCaption")
@@ -599,7 +612,7 @@ class TotalsBar(QWidget):
             value.setObjectName("kpiValue")
             value.setAlignment(Qt.AlignmentFlag.AlignCenter)
             accent = KPI_ACCENTS[i % len(KPI_ACCENTS)]
-            value.setStyleSheet(f"color:{accent}; font-size:14pt; font-weight:bold;")
+            value.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
             box.addWidget(caption)
             box.addWidget(value)
             lay.addWidget(card, 1)
@@ -612,14 +625,14 @@ class TotalsBar(QWidget):
             return
         text = fmt.money(value) if money else str(value)
         v.setText(text)
-        accent = self._accents.get(label, "#2563eb")
+        accent = self._accents.get(label, "#4f46e5")
         try:
             negative = float(value or 0) < 0
         except (TypeError, ValueError):
             negative = False
         if negative:
-            accent = "#d92d20"
-        v.setStyleSheet(f"color:{accent}; font-size:14pt; font-weight:bold;")
+            accent = "#e02424"
+        v.setStyleSheet(f"color:{accent}; font-size:15pt; font-weight:bold;")
 
 
 # ---------------------------------------------------------------------------
