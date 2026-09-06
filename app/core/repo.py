@@ -1234,8 +1234,13 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
         raise RuleError("لا يمكن إدخال قيم سالبة في الإضافات أو الخصومات.")
 
     # ---- تسويات السلف (كلي/جزئي) ----
+    raw_settlements = data.get("settlements") or []
+    if not isinstance(raw_settlements, (list, tuple)):
+        raise RuleError("قائمة تسويات السلف غير صالحة.")
+    if len(raw_settlements) > 1000:
+        raise RuleError("عدد تسويات السلف أكبر من الحد المسموح.")
     settlements = []
-    for item in (data.get("settlements") or []):
+    for item in raw_settlements:
         if isinstance(item, (list, tuple)):
             settlements.append((_positive_id(item[0], "معرّف السلفة"),
                                 _round_money(item[1])))
@@ -1251,8 +1256,13 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
         raise RuleError("مجموع خصومات السلف الموزعة لا يطابق قيمة الخصم من السلف.")
 
     # ---- تسويات بنود الخصومات (نفس المنطق على employee_deductions) ----
+    raw_ded_settlements = data.get("deduction_settlements") or []
+    if not isinstance(raw_ded_settlements, (list, tuple)):
+        raise RuleError("قائمة تسويات الخصومات غير صالحة.")
+    if len(raw_ded_settlements) > 1000:
+        raise RuleError("عدد تسويات الخصومات أكبر من الحد المسموح.")
     deduction_settlements = []
-    for item in (data.get("deduction_settlements") or []):
+    for item in raw_ded_settlements:
         if isinstance(item, (list, tuple)):
             deduction_settlements.append(
                 (_positive_id(item[0], "معرّف بند الخصم"), _round_money(item[1])))
