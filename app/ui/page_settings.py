@@ -117,6 +117,28 @@ class SettingsPage(QWidget):
         self.template_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.template_combo.currentIndexChanged.connect(self._show_template_hint)
         pf.addRow("قالب الفاتورة", self.template_combo)
+        self.paper_combo = QComboBox()
+        for pid, label in (("A4", "A4 (21 × 29.7 سم)"), ("A5", "A5 (14.8 × 21 سم)"),
+                           ("Letter", "Letter (21.6 × 27.9 سم)")):
+            self.paper_combo.addItem(label, pid)
+        i = self.paper_combo.findData(repo.get_setting(conn, "print_paper", "A4"))
+        self.paper_combo.setCurrentIndex(i if i >= 0 else 0)
+        pf.addRow("مقاس الورق", self.paper_combo)
+        self.orient_combo = QComboBox()
+        self.orient_combo.addItem("طولي (Portrait)", "portrait")
+        self.orient_combo.addItem("عرضي (Landscape)", "landscape")
+        i = self.orient_combo.findData(
+            repo.get_setting(conn, "print_orientation", "portrait"))
+        self.orient_combo.setCurrentIndex(i if i >= 0 else 0)
+        pf.addRow("اتجاه الصفحة", self.orient_combo)
+        self.margin_edit = QLineEdit(repo.get_setting(conn, "print_margin_mm", "12"))
+        pf.addRow("الهامش (مم)", self.margin_edit)
+        self.fontsize_edit = QLineEdit(repo.get_setting(conn, "print_font_size_pt", "10"))
+        pf.addRow("حجم الخط (نقطة)", self.fontsize_edit)
+        self.accent_edit = QLineEdit(
+            repo.get_setting(conn, "print_accent_color", "#1f4e79"))
+        self.accent_edit.setPlaceholderText("#1f4e79")
+        pf.addRow("لون الهوية", self.accent_edit)
         self.template_hint = QLabel("")
         self.template_hint.setWordWrap(True)
         self.template_hint.setStyleSheet("color:#64748b;font-size:9pt")
@@ -333,9 +355,18 @@ class SettingsPage(QWidget):
         except Exception as e:  # noqa: BLE001
             warn(self, str(e))
             return
-        # قالب الفاتورة
+        # قالب الفاتورة وإعدادات الطباعة
         repo.set_setting(conn, "invoice_template",
                          self.template_combo.currentData() or "modern")
+        repo.set_setting(conn, "print_paper", self.paper_combo.currentData() or "A4")
+        repo.set_setting(conn, "print_orientation",
+                         self.orient_combo.currentData() or "portrait")
+        for setting_key, edit, default in (
+                ("print_margin_mm", self.margin_edit, "12"),
+                ("print_font_size_pt", self.fontsize_edit, "10"),
+                ("print_accent_color", self.accent_edit, "#1f4e79")):
+            value = edit.text().strip() or default
+            repo.set_setting(conn, setting_key, value)
         # مفاتيح الميزات (الافتراضي معطّل — التفعيل قرار صريح)
         for key, cb in self.feature_checks.items():
             features.set_feature(conn, key, cb.isChecked())
