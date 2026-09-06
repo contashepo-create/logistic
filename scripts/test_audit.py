@@ -74,7 +74,8 @@ class ShadowLedger:
         cash_out: {(kind, account_id): amount} مصروفات نقدية أنشأت سندات تلقائية.
         """
         self.cust[cid] += total_trips + billable
-        self.pnl["transport"] += total_trips
+        # مصروف العميل يدخل وعاء الإيراد (كما في نسخة الويب: transport += sub)
+        self.pnl["transport"] += total_trips + billable
         self.pnl["direct"] += total_expenses
         for key, amount in (cash_out or {}).items():
             self.acc[key] = self.acc.get(key, 0.0) - amount
@@ -136,23 +137,26 @@ class ShadowLedger:
         check(f"[ظل/{ctx}] صافي الربح = الإيراد − المصروف",
               abs(round(pnl["net"], 2) - round(pnl["total_revenue"]
                                                - pnl["total_expenses"], 2)) < 0.011)
-        # معادلة ميزان المراجعة: net − Δأصول = (مباشر − سندات رحلات)
+        # معادلة ميزان المراجعة المشتقة:
+        #   net    = (نقلات + مصروف العميل) − (نقدي + غير نقدي)
+        #   Δالأصول = (الإيراد + الضريبة المحصّلة) − الصرف النقدي
+        #   ⇒ net − Δالأصول = −(مصروف غير نقدي) − الضريبة المحصّلة
         assets = sum(self.acc.values()) + sum(self.cust.values())
         opened = sum(self._opened_acc) + sum(self._opened_cust)
         d_assets = assets - opened
-        # كل مصروف غير نقدي (سائق/مورّد) يدخل التكلفة ولا يمسّ النقد،
-        # وكل مصروف على العميل يزيد المطالبة ولا يدخل التكلفة — وهذا فرق المعادلة.
         noncash = float(conn.execute(
             "SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e "
             "WHERE e.source IN ('driver','supplier')").fetchone()[0])
-        billable = float(conn.execute(
-            "SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e "
-            "WHERE e.source = 'customer'").fetchone()[0])
-        check(f"[ظل/{ctx}] ميزان المراجعة: net − Δالأصول = مصروف غير نقدي − مصروف العميل",
-              abs(round(pnl["net"] - d_assets, 2)
-                  - round(noncash - billable, 2)) < 0.06,
-              f"({round(pnl['net'] - d_assets, 2)} مقابل "
-              f"{round(noncash - billable, 2)})")
+        expected = round(-noncash - pnl["vat_collected"], 2)
+        actual = round(pnl["net"] - d_assets, 2)
+        check(f"[ظل/{ctx}] ميزان المراجعة: net − Δالأصول = −غير نقدي − ضريبة",
+              abs(actual - expected) < 0.06,
+              f"({actual} مقابل {expected})")
+        # المتطابقة تكون فارغة (0=0) إن لم يولّد السيناريو مصروفات غير نقدية،
+        # فنؤكد وجودها في سياقات العمليات (لا في التجهيز الذي يسبقها).
+        if ctx != "تجهيز":
+            check(f"[ظل/{ctx}] السيناريو ولّد مصروفات غير نقدية (فحص غير فارغ)",
+                  noncash > 0, f"(غير نقدي={round(noncash, 2)})")
 
     _opened_acc: list = []
     _opened_cust: list = []
@@ -191,11 +195,15 @@ def main() -> None:  # noqa: C901
                 trips = []
                 for _ in range(rng.randint(1, 3)):
                     price = round(rng.uniform(50, 9000), 3)  # يدخل 3 منازل، النظام يقرّب
-                    exps = [{"expense_type": rng.choice(["trip", "fuel", "card"]),
-                             "amount": round(rng.uniform(5, 400), 3),
-                             "source": "cash", "account_kind": "cashbox",
-                             "account_id": cb}
-                            for _ in range(rng.randint(0, 2))]
+                    exps = []
+                    for _ in range(rng.randint(0, 3)):
+                        src = rng.choice(["cash", "driver", "supplier", "customer"])
+                        item = {"expense_type": rng.choice(["trip", "fuel", "card"]),
+                                "amount": round(rng.uniform(5, 400), 3),
+                                "source": src}
+                        if src == "cash":
+                            item.update(account_kind="cashbox", account_id=cb)
+                        exps.append(item)
                     trips.append({"vehicle_id": rng.choice([None, v1]),
                                   "driver_id": rng.choice([None, d1]),
                                   "from_loc": f"س{step}", "to_loc": f"ص{step}",
@@ -203,13 +211,20 @@ def main() -> None:  # noqa: C901
                 cid = rng.choice([c1, c2])
                 d_inv = rng.choice(["2026-02-01", "2026-07-14", "2026-11-30"])
                 total = round(sum(round(t["price"], 2) for t in trips), 2)
-                exp = round(sum(round(e["amount"], 2)
-                                for t in trips for e in t["expenses"]), 2)
+                cash_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] == "cash"), 2)
+                cost_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] in ("cash", "driver", "supplier")), 2)
+                bill_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] == "customer"), 2)
                 repo.save_invoice(conn, {
                     "date": d_inv, "customer_id": cid, "trips": trips})
                 # المصروفات النقدية أنشأت سندات دفع تلقائية من الخزينة
-                ledger.invoice(cid, total, exp,
-                               cash_out={("cashbox", cb): exp})
+                ledger.invoice(cid, total, cost_exp, billable=bill_exp,
+                               cash_out={("cashbox", cb): cash_exp})
             elif op == "recv":
                 kind, aid = rng.choice([("cashbox", cb), ("bank", bn)])
                 amount = round(rng.uniform(10, 4000), 2)
