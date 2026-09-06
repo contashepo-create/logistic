@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ..core import calc, db, features, repo, tax
 from ..core.rules import RuleError
-from ..utils import exporter, fmt
+from ..utils import exporter, fmt, invoice_templates
 from ..utils.fmt import (
     EXPENSE_SOURCES, EXPENSE_SOURCE_HINTS, EXPENSE_TYPES, NOTE_TYPES,
     PAYMENT_TYPES, RECEIPT_TYPES, VEHICLE_EXPENSES
@@ -590,29 +590,38 @@ def _zatca_qr_img_html(conn, d: dict) -> str:
             f"style='width:110px;height:110px' alt='QR'>")
 
 
-def customer_invoice_html(conn, invoice_id: int) -> str:
-    """فاتورة ضريبية: تُخفي المصروفات والأرباح وتُظهر الضريبة ورمز زاتكا."""
+def build_invoice_model(conn, invoice_id: int) -> dict | None:
+    """نموذج بيانات موحّد للفاتورة تستهلكه كل القوالب (مطابق لـ
+    InvoiceTemplateModel في نسخة الويب)."""
     d = calc.get_invoice_full(conn, invoice_id)
     if not d:
-        return ""
+        return None
     info = repo.company_info(conn)
-    cur = info.get("currency", "")
     customer = d.get("customer") or {}
-    # ميزة «الفاتورة الضريبية» معطّلة افتراضياً ولا تُفعَّل إلا بقرار المالك
-    # (من بوت التليجرام أو صفحة الإعدادات) — مطابق لـ hasFeature في الويب.
     tax_enabled = features.has_feature(conn, "tax_invoice")
     inv_type = (tax.zatca_invoice_type(customer) if tax_enabled else "simplified")
     type_label = tax.ZATCA_TYPE_LABEL[inv_type]
+    cur = info.get("currency", "")
 
-    rows_html = []
-    for i, t in enumerate(d["trips"], start=1):
+    seller_address = tax.format_national_address({
+        "region": info.get("company_region"), "city": info.get("company_city"),
+        "district": info.get("company_district"),
+        "street": info.get("company_street"),
+        "building_no": info.get("company_building_no"),
+        "postal_code": info.get("company_postal_code"),
+        "country": info.get("company_country")}) or info.get("company_address", "")
+    buyer_address = tax.format_national_address(customer) or customer.get("address", "")
+
+    # بنود الفاتورة: كل نقلة سطر + كل مصروف يتحمّله العميل سطر
+    lines = []
+    for t in d["trips"]:
         vehicle = "—"
         if t.get("vehicle_id"):
             v = repo.get_vehicle(conn, t["vehicle_id"])
             vehicle = v["plate_number"] if v else "—"
         driver = "—"
         if t.get("driver_id"):
-            e = repo.get_employee(conn, t["driver_id"])
+            e = repo.get_employee(conn, t["employee_id"]) if False else repo.get_employee(conn, t["driver_id"])
             driver = e["name"] if e else "—"
         containers = t.get("container_numbers") or []
         if isinstance(containers, str):
@@ -621,112 +630,74 @@ def customer_invoice_html(conn, invoice_id: int) -> str:
                 containers = _json.loads(containers or "[]")
             except (ValueError, TypeError):
                 containers = []
-        rows_html.append(
-            f"<tr><td align='center'>{i}</td>"
-            f"<td align='center'>{exporter._esc(t.get('from_loc') or '—')}</td>"
-            f"<td align='center'>{exporter._esc(t.get('to_loc') or '—')}</td>"
-            f"<td align='center'>{fmt.money(t.get('qty', 1))}</td>"
-            f"<td align='center'>{fmt.money(t.get('unit_price', t.get('price', 0)))}</td>"
-            f"<td align='center'>{exporter._esc(vehicle)}</td>"
-            f"<td align='center'>{exporter._esc(driver)}</td>"
-            f"<td align='center'>{exporter._esc('، '.join(containers) or '—')}</td>"
-            f"<td align='center'>{fmt.money(t.get('price', 0))}</td></tr>")
+        desc = f"{t.get('from_loc', '')} ← {t.get('to_loc', '')}"
+        extra = []
+        if vehicle != "—":
+            extra.append(f"السيارة: {vehicle}")
+        if driver != "—":
+            extra.append(f"السائق: {driver}")
+        if containers:
+            extra.append("حاويات: " + "، ".join(str(c) for c in containers))
+        if extra:
+            desc += "  (" + " | ".join(extra) + ")"
+        lines.append({"description": desc, "qty": fmt.money(t.get("qty", 1)),
+                      "unit_price": fmt.money(t.get("unit_price", t.get("price", 0))),
+                      "total": fmt.money(t.get("price", 0))})
+        for e in (t.get("expenses") or []):
+            if (e.get("source") or "cash") != "customer":
+                continue
+            label = e.get("notes") or EXPENSE_TYPES.get(e.get("expense_type"), "أخرى")
+            lines.append({"description": f"رسوم يتحمّلها العميل — {label}",
+                          "qty": fmt.money(e.get("qty", 1)),
+                          "unit_price": fmt.money(e.get("unit_amount", e.get("amount", 0))),
+                          "total": fmt.money(e.get("amount", 0))})
 
-    # مصروفات يتحمّلها العميل تُدرج في الفاتورة (ليست تكلفة داخلية)
-    billable_rows = [e for t in d["trips"] for e in t.get("expenses", [])
-                     if (e.get("source") or "cash") == "customer"]
-    for i, e in enumerate(billable_rows, start=len(rows_html) + 1):
-        rows_html.append(
-            f"<tr><td align='center'>{i}</td>"
-            f"<td colspan='4' align='center'>رسوم يتحمّلها العميل — "
-            f"{exporter._esc(e.get('notes') or EXPENSE_TYPES.get(e.get('expense_type'), 'أخرى'))}</td>"
-            f"<td colspan='3' align='center'>—</td>"
-            f"<td align='center'>{fmt.money(e.get('amount', 0))}</td></tr>")
+    net = round(float(d["trips_total"]) + float(d["billable_total"]), 2)
+    model = {
+        "invoice_number": calc.invoice_number_label(d["number"]),
+        "issue_date": str(d["date"]),
+        "invoice_title_ar": type_label["ar"],
+        "invoice_title_en": type_label["en"],
+        "currency": cur,
+        "container_number": d.get("container_number", ""),
+        "seller": {"name": info.get("company_name", ""),
+                   "tax_number": info.get("company_tax_number", ""),
+                   "commercial_reg": info.get("company_commercial_reg", ""),
+                   "unified_number": info.get("company_unified_number", ""),
+                   "address": seller_address,
+                   "phone": info.get("company_phone", "")},
+        "buyer": {"name": customer.get("name", ""), "code": customer.get("code", ""),
+                  "phone": customer.get("phone", ""),
+                  # الرقم الضريبي للمشتري يظهر في الفاتورة الضريبية فقط
+                  "tax_number": (customer.get("tax_number", "")
+                                 if inv_type == "standard" else ""),
+                  "address": buyer_address},
+        "lines": lines,
+        "subtotal": fmt.money(net),
+        "vat_rate": fmt.money(d["vat_rate"]),
+        "vat_amount": fmt.money(d["vat_amount"]),
+        "total": fmt.money(d["customer_total"]),
+        "amount_in_words": fmt.amount_to_arabic_words(d["customer_total"], cur or "ريال"),
+        "notes": d.get("notes") or "",
+        "footer_text": repo.get_setting(conn, "vat_note", ""),
+        "warning": ("" if tax_enabled or float(d.get("vat_amount") or 0) <= 0
+                    else features.TAX_INVOICE_WARNING),
+        # رمز زاتكا جزء من ميزة الفاتورة الضريبية — لا يُطبع وهي معطّلة
+        "qr_html": (_zatca_qr_img_html(conn, d) if tax_enabled else ""),
+        "qr_caption": "رمز الاستجابة السريعة (ZATCA)",
+    }
+    return model
 
-    net = round(d["trips_total"] + d["billable_total"], 2)
-    seller_address = tax.format_national_address({
-        "region": info.get("company_region"), "city": info.get("company_city"),
-        "district": info.get("company_district"), "street": info.get("company_street"),
-        "building_no": info.get("company_building_no"),
-        "postal_code": info.get("company_postal_code"),
-        "country": info.get("company_country")}) or info.get("company_address", "")
-    buyer_address = tax.format_national_address(customer) or customer.get("address", "")
 
-    parts = [
-        f"<div align='center'><b style='font-size:18pt'>"
-        f"{exporter._esc(info['company_name'])}</b></div>",
-    ]
-    if seller_address or info.get("company_phone"):
-        parts.append(
-            f"<div align='center' style='font-size:9.5pt'>"
-            f"{exporter._esc(' | '.join(x for x in (seller_address, info.get('company_phone')) if x))}</div>")
-    if info.get("company_tax_number"):
-        parts.append(
-            f"<div align='center' style='font-size:9.5pt'>الرقم الضريبي: "
-            f"{exporter._esc(info['company_tax_number'])}"
-            + (f" | السجل التجاري: {exporter._esc(info['company_commercial_reg'])}"
-               if info.get("company_commercial_reg") else "") + "</div>")
-    parts += [
-        "<hr>",
-        f"<div align='center' style='font-size:15pt'><b>"
-        f"{type_label['ar']} / {type_label['en']}</b></div>",
-        "<table dir='rtl' width='100%' cellspacing='6' style='font-size:11pt'>"
-        f"<tr><td align='right'><b>رقم الفاتورة:</b> "
-        f"{calc.invoice_number_label(d['number'])}</td>"
-        f"<td align='left'><b>التاريخ:</b> {d['date']}</td></tr>"
-        f"<tr><td align='right'><b>العميل:</b> "
-        f"{exporter._esc(customer.get('name', ''))} ({exporter._esc(customer.get('code', ''))})</td>"
-        f"<td align='left'><b>الهاتف:</b> "
-        f"{exporter._esc(customer.get('phone') or '—')}</td></tr>"
-        + (f"<tr><td align='right'><b>الرقم الضريبي للعميل:</b> "
-           f"{exporter._esc(customer.get('tax_number') or '—')}</td>"
-           f"<td align='left'><b>العنوان:</b> {exporter._esc(buyer_address or '—')}</td></tr>"
-           if inv_type == "standard" else "")
-        + "</table>",
-        "<table dir='rtl' width='100%' border='0.5' cellspacing='0' "
-        "cellpadding='5' style='font-size:10.5pt'>",
-        "<tr bgcolor='#1f4e79'>"
-        + "".join(f"<td align='center'><b><font color='white'>{h}</font></b></td>"
-                  for h in ("م", "من", "إلى", "العدد", "سعر الوحدة", "السيارة",
-                            "السائق", "رقم الحاوية", "الإجمالي"))
-        + "</tr>",
-        *rows_html,
-        f"<tr bgcolor='#e9f0f8'><td colspan='8' align='center'><b>الإجمالي قبل الضريبة</b></td>"
-        f"<td align='center'><b>{fmt.money(net)}</b></td></tr>",
-        f"<tr bgcolor='#e9f0f8'><td colspan='8' align='center'>"
-        f"<b>ضريبة القيمة المضافة ({fmt.money(d['vat_rate'])}%)</b></td>"
-        f"<td align='center'><b>{fmt.money(d['vat_amount'])}</b></td></tr>",
-        f"<tr bgcolor='#1f4e79'><td colspan='8' align='center'>"
-        f"<b><font color='white'>الإجمالي المستحق {exporter._esc(cur)}</font></b></td>"
-        f"<td align='center'><b><font color='white'>{fmt.money(d['customer_total'])}"
-        f"</font></b></td></tr>",
-        "</table>",
-    ]
-    # المبلغ كتابةً (تفقيط) — مطابق لقالب فاتورة الويب
-    words = fmt.amount_to_arabic_words(d["customer_total"], cur or "ريال")
-    parts.append(
-        "<table dir='rtl' width='100%'><tr>"
-        "<td bgcolor='#f8fafc' align='right' style='font-size:10pt;padding:8px'>"
-        "<b><font color='#1f4e79'>المبلغ كتابةً</font></b><br>"
-        f"{exporter._esc(words)}</td></tr></table>")
-    if d.get("notes"):
-        parts.append(f"<div align='right' style='font-size:10pt'><b>ملاحظات:</b> "
-                     f"{exporter._esc(d['notes'])}</div>")
-    # رمز زاتكا جزء من ميزة الفاتورة الضريبية — لا يُطبع وهي معطّلة
-    qr = _zatca_qr_img_html(conn, d) if tax_enabled else ""
-    if qr:
-        parts.append(
-            "<table dir='rtl' width='100%'><tr>"
-            f"<td align='right' style='font-size:9pt'>رمز الاستجابة السريعة (ZATCA)<br>{qr}</td>"
-            "</tr></table>")
-    if not tax_enabled and float(d.get("vat_amount") or 0) > 0:
-        parts.append(f"<br><div align='center' style='font-size:8.5pt;color:#92400e'>"
-                     f"{exporter._esc(features.TAX_INVOICE_WARNING)}</div>")
-    note = repo.get_setting(conn, "vat_note", "")
-    if note:
-        parts.append(f"<br><div align='center' style='font-size:9.5pt'>"
-                     f"{exporter._esc(note)}</div>")
-    return "".join(parts)
+def customer_invoice_html(conn, invoice_id: int) -> str:
+    """فاتورة بالقالب المختار في إعدادات الطباعة."""
+    model = build_invoice_model(conn, invoice_id)
+    if not model:
+        return ""
+    template_id = repo.get_setting(conn, "invoice_template", "modern")
+    return invoice_templates.render_invoice(model, template_id)
+
+
 
 
 def print_customer_invoice(parent, invoice_id: int) -> None:

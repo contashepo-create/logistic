@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from .. import APP_TITLE, __version__
-from ..core import db, repo, tax
+from ..core import db, features, repo, tax, telegram_bot, updater
+from ..utils import invoice_templates
 from .widgets import PageFrame, info, warn
 
 
@@ -104,6 +105,80 @@ class SettingsPage(QWidget):
         self._refresh_zatca_status()
         self.tax_number_edit.textChanged.connect(self._refresh_zatca_status)
 
+        # --- إعدادات الطباعة وقوالب الفواتير ---
+        print_box = QGroupBox("الطباعة وقوالب الفواتير")
+        pf = QFormLayout(print_box)
+        pf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.template_combo = QComboBox()
+        for tpl in invoice_templates.PRINT_TEMPLATES:
+            self.template_combo.addItem(tpl["name"], tpl["id"])
+        idx = self.template_combo.findData(
+            repo.get_setting(conn, "invoice_template", "modern"))
+        self.template_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.template_combo.currentIndexChanged.connect(self._show_template_hint)
+        pf.addRow("قالب الفاتورة", self.template_combo)
+        self.template_hint = QLabel("")
+        self.template_hint.setWordWrap(True)
+        self.template_hint.setStyleSheet("color:#64748b;font-size:9pt")
+        pf.addRow("", self.template_hint)
+        self._show_template_hint()
+        self.frame.add_widget(print_box, stretch=0)
+
+        # --- الميزات القابلة للتحكم عن بُعد ---
+        feat_box = QGroupBox("الميزات (تتحكم بها أيضاً من بوت التليجرام)")
+        fv = QVBoxLayout(feat_box)
+        self.feature_checks = {}
+        for key in features.FEATURE_KEYS:
+            label = features.FEATURE_LABELS[key]
+            cb = QCheckBox(label["name"])
+            cb.setChecked(features.has_feature(conn, key))
+            fv.addWidget(cb)
+            hint = QLabel(label["description"])
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color:#64748b;font-size:9pt;padding-right:22px")
+            fv.addWidget(hint)
+            self.feature_checks[key] = cb
+        note = QLabel("الفاتورة الضريبية معطّلة افتراضياً — لا تُفعَّل إلا بقرارك.")
+        note.setStyleSheet("color:#92400e;font-size:9pt")
+        fv.addWidget(note)
+        self.frame.add_widget(feat_box, stretch=0)
+
+        # --- بوت التليجرام للتحكم عن بُعد ---
+        bot_box = QGroupBox("بوت التليجرام للتحكم عن بُعد")
+        bf = QFormLayout(bot_box)
+        bf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.bot_token_edit = QLineEdit(repo.get_setting(conn, "telegram_bot_token"))
+        self.bot_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.bot_token_edit.setPlaceholderText("رمز البوت من @BotFather — لا يُسجَّل في أي ملف")
+        bf.addRow("رمز البوت", self.bot_token_edit)
+        self.bot_chat_edit = QLineEdit(repo.get_setting(conn, "telegram_owner_chat_id"))
+        self.bot_chat_edit.setPlaceholderText("معرّف محادثتك — لا يُنفَّذ أمر من غيره")
+        bf.addRow("معرّف المالك (Chat ID)", self.bot_chat_edit)
+        self.bot_status_label = QLabel("")
+        self.bot_status_label.setWordWrap(True)
+        bf.addRow("الحالة", self.bot_status_label)
+        bot_btn = QPushButton("🤖 تشغيل البوت")
+        bot_btn.clicked.connect(self.toggle_bot)
+        bf.addRow("", bot_btn)
+        self.frame.add_widget(bot_box, stretch=0)
+
+        # --- التحديثات: فحص وإشعار بلا تثبيت تلقائي ---
+        upd_box = QGroupBox("التحديثات")
+        uv = QVBoxLayout(upd_box)
+        uf = QFormLayout()
+        uf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.update_url_edit = QLineEdit(repo.get_setting(conn, "update_manifest_url"))
+        self.update_url_edit.setPlaceholderText("https://…/manifest.json")
+        uf.addRow("عنوان فحص التحديث", self.update_url_edit)
+        uv.addLayout(uf)
+        self.update_label = QLabel("")
+        self.update_label.setWordWrap(True)
+        uv.addWidget(self.update_label)
+        self.update_btn = QPushButton("🔍 فحص التحديث الآن")
+        self.update_btn.clicked.connect(self.check_update)
+        uv.addWidget(self.update_btn)
+        self.frame.add_widget(upd_box, stretch=0)
+
         save_btn = QPushButton("💾 حفظ الإعدادات")
         save_btn.setObjectName("primary")
         save_btn.clicked.connect(self.save)
@@ -126,6 +201,58 @@ class SettingsPage(QWidget):
         il.addWidget(QLabel("النظام يعمل بدون اتصال بالإنترنت، والبيانات محلية بالكامل."))
         self.frame.add_widget(info_box, stretch=0)
         self.frame.body.addStretch(2)
+
+    def _show_template_hint(self) -> None:
+        """وصف القالب المختار (مطابق لوصف PRINT_TEMPLATES في الويب)."""
+        tpl = invoice_templates.get_template(self.template_combo.currentData() or "modern")
+        self.template_hint.setText(tpl["description"])
+
+    def toggle_bot(self) -> None:
+        """تشغيل/إيقاف بوت التليجرام بعد حفظ الإعدادات."""
+        conn = db.get_conn()
+        repo.set_setting(conn, "telegram_bot_token",
+                         self.bot_token_edit.text().strip())
+        repo.set_setting(conn, "telegram_owner_chat_id",
+                         self.bot_chat_edit.text().strip())
+        bot = telegram_bot.TelegramBot(db.get_conn)
+        if not bot.enabled:
+            self.bot_status_label.setText(
+                "⛔ يحتاج رمز البوت ومعرّف المالك معاً.")
+            return
+        app = self.window()
+        running = getattr(app, "telegram_bot", None)
+        if running and running._thread and running._thread.is_alive():
+            running.stop()
+            self.bot_status_label.setText("⏹️ أُوقف البوت.")
+            return
+        if bot.start():
+            if app is not None:
+                app.telegram_bot = bot
+            self.bot_status_label.setText(
+                "▶️ البوت يعمل. أرسل /help للبوت لقائمة الأوامر.")
+        else:
+            self.bot_status_label.setText("⛔ تعذّر تشغيل البوت.")
+
+    def check_update(self) -> None:
+        """فحص توفّر تحديث — يُبلّغ فقط ولا يُنزّل ولا يُثبّت شيئاً."""
+        conn = db.get_conn()
+        repo.set_setting(conn, "update_manifest_url",
+                         self.update_url_edit.text().strip())
+        info_data = updater.check_for_update(conn)
+        if info_data.get("error"):
+            self.update_label.setText(
+                f"تعذّر الفحص: {info_data['error']}")
+            return
+        if not info_data.get("available"):
+            self.update_label.setText(
+                f"✅ أنت على أحدث إصدار ({info_data['current']}).")
+            return
+        size = info_data.get("size") or 0
+        size_txt = f" — {size / 1048576:.1f} م.ب" if size else ""
+        self.update_label.setText(
+            f"🔔 <b>يتوفر تحديث {info_data['latest']}</b>{size_txt}<br>"
+            f"{info_data.get('notes', '')}<br>"
+            f"<i>لن يُثبَّت تلقائياً — نزّله وثبّته بنفسك من العنوان المعطى.</i>")
 
     def backup_now(self) -> None:
         """نسخة احتياطية متناسقة إلى مجلد backups داخل مجلد البيانات."""
@@ -206,5 +333,18 @@ class SettingsPage(QWidget):
         except Exception as e:  # noqa: BLE001
             warn(self, str(e))
             return
+        # قالب الفاتورة
+        repo.set_setting(conn, "invoice_template",
+                         self.template_combo.currentData() or "modern")
+        # مفاتيح الميزات (الافتراضي معطّل — التفعيل قرار صريح)
+        for key, cb in self.feature_checks.items():
+            features.set_feature(conn, key, cb.isChecked())
+        # بوت التليجرام وعنوان التحديث
+        repo.set_setting(conn, "telegram_bot_token",
+                         self.bot_token_edit.text().strip())
+        repo.set_setting(conn, "telegram_owner_chat_id",
+                         self.bot_chat_edit.text().strip())
+        repo.set_setting(conn, "update_manifest_url",
+                         self.update_url_edit.text().strip())
         self._refresh_zatca_status()
         info(self, "تم حفظ الإعدادات بنجاح.")
