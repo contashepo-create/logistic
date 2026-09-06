@@ -24,7 +24,7 @@ from ..utils.fmt import (
 )
 from .widgets import (
     AccountCombo, AmountEdit, DictCombo, FormDialog, TotalsBar, VDateEdit,
-    _row_button, error_msg, warn,
+    _row_button, error_msg, install_row_actions, make_actions_widget, warn,
 )
 
 
@@ -224,6 +224,8 @@ class TripExpensesDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # عمود العمليات بعرض ثابت + صفوف بارتفاع مريح: الأزرار كاملة دائماً
+        install_row_actions(self.table, 5, n_buttons=2)
         root.addWidget(self.table, 1)
 
         close_btn = QPushButton("تم")
@@ -235,6 +237,7 @@ class TripExpensesDialog(QDialog):
         expenses = self.trip.get("expenses", [])
         self.table.setRowCount(len(expenses))
         for r, e in enumerate(expenses):
+            self.table.setRowHeight(r, 44)
             for c, val in enumerate([
                     EXPENSE_TYPES.get(e.get("expense_type"), "—"),
                     fmt.money(e.get("qty", 1)), fmt.money(e.get("unit_amount", 0)),
@@ -243,15 +246,13 @@ class TripExpensesDialog(QDialog):
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, item)
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(2, 1, 2, 1)
-            lay.addStretch(1)
-            lay.addWidget(_row_button("✏️", "تعديل", "rowBtn",
-                                      lambda _=False, x=r: self.edit_expense(x)))
-            lay.addWidget(_row_button("🗑️", "حذف", "rowBtnDanger",
-                                      lambda _=False, x=r: self.del_expense(x)))
-            self.table.setCellWidget(r, 5, w)
+            buttons = [
+                _row_button("✏", "تعديل", "rowBtnEdit",
+                            lambda _=False, x=r: self.edit_expense(x)),
+                _row_button("🗑", "حذف", "rowBtnDanger",
+                            lambda _=False, x=r: self.del_expense(x)),
+            ]
+            self.table.setCellWidget(r, 5, make_actions_widget(buttons))
 
     def add_expense(self) -> None:
         dlg = ExpenseDialog(self, has_driver=bool(self.trip.get("driver_id")))
@@ -338,9 +339,14 @@ class InvoiceDialog(QDialog):
         self.trips_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.trips_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.trips_table.setAlternatingRowColors(True)
+        header = self.trips_table.horizontalHeader()
+        header.setSectionsMovable(False)
+        for c in range(9):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         for c in (3, 4):
-            self.trips_table.horizontalHeader().setSectionResizeMode(
-                c, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+        # عمود العمليات (3 أزرار) بعرض ثابت: تظهر كاملة دائماً
+        install_row_actions(self.trips_table, 9, n_buttons=3)
         tv.addWidget(self.trips_table, 1)
         body.addWidget(trips_box, 5)
 
@@ -445,6 +451,7 @@ class InvoiceDialog(QDialog):
         drivers = {e["id"]: e["name"] for e in repo.list_employees(conn)}
         self.trips_table.setRowCount(len(self.trips))
         for r, t in enumerate(self.trips):
+            self.trips_table.setRowHeight(r, 44)
             exp_sum = sum(_expense_amount(e) for e in t.get("expenses", []))
             vals = [str(r + 1),
                     vehicles.get(t.get("vehicle_id"), "—"),
@@ -456,21 +463,21 @@ class InvoiceDialog(QDialog):
                 item = QTableWidgetItem(str(v))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.trips_table.setItem(r, c, item)
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(2, 1, 2, 1)
-            lay.setSpacing(3)
-            lay.addStretch(1)
-            lay.addWidget(_row_button(
-                "💰", "مصروفات النقلة", "rowBtn",
-                lambda _=False, x=r: self.edit_expenses(x)))
-            lay.addWidget(_row_button(
-                "✏️", "تعديل النقلة", "rowBtn",
-                lambda _=False, x=r: self.edit_trip(x)))
-            lay.addWidget(_row_button(
-                "🗑️", "حذف النقلة", "rowBtnDanger",
-                lambda _=False, x=r: self.remove_trip(x)))
-            self.trips_table.setCellWidget(r, 9, w)
+            buttons = [
+                _row_button("💰", "مصروفات النقلة", "rowBtnMoney",
+                            lambda _=False, x=r: self.edit_expenses(x)),
+                _row_button("✏", "تعديل النقلة", "rowBtnEdit",
+                            lambda _=False, x=r: self.edit_trip(x)),
+                _row_button("🗑", "حذف النقلة", "rowBtnDanger",
+                            lambda _=False, x=r: self.remove_trip(x)),
+            ]
+            if self.read_only:
+                # الفاتورة الصادرة لا تقبل التعديل — الأزرار معطّلة للإيضاح
+                for b, tip in zip(buttons, ("للعرض فقط", "الفاتورة لا تُعدَّل بعد الإصدار",
+                                            "الفاتورة لا تُعدَّل بعد الإصدار")):
+                    b.setEnabled(False)
+                    b.setToolTip(tip)
+            self.trips_table.setCellWidget(r, 9, make_actions_widget(buttons))
 
         self.att_list.clear()
         for rel in self.attachments:
@@ -971,6 +978,8 @@ class CreditDebitNoteDialog(FormDialog):
             ["✔", "من", "إلى", "القيمة", "شامل الضريبة"])
         self.trips_table.verticalHeader().setVisible(False)
         self.trips_table.setColumnWidth(0, 40)
+        self.trips_table.setMinimumHeight(170)
+        self.trips_table.verticalHeader().setDefaultSectionSize(38)
         self.trips_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.trips_table.setEditTriggers(

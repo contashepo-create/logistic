@@ -21,7 +21,7 @@ class ReportPage(QWidget):
         self.frame = PageFrame(self.TITLE, self.SUBTITLE, show_add=False,
                                show_search=False)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.frame)
         self.frame.export_bar.excelClicked.connect(lambda: self.do_export("excel"))
         self.frame.export_bar.pdfClicked.connect(lambda: self.do_export("pdf"))

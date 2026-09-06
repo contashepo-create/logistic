@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import date
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+    QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ..core import calc, db, repo
 from ..utils import exporter, fmt
-from .widgets import PlainTable, VDateEdit
+from .widgets import FlowLayout, PlainTable, VDateEdit
 
 
 class StatementDialog(QDialog):
@@ -21,44 +22,66 @@ class StatementDialog(QDialog):
         self.title = title
         self.owner_label = owner_label
         self.setWindowTitle(title)
-        self.resize(960, 600)
+        self.resize(980, 640)
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(18, 14, 18, 14)
+        root.setSpacing(10)
 
-        head = QHBoxLayout()
+        # ترويسة: اسم صاحب الحساب
         name_lbl = QLabel(owner_label)
-        name_lbl.setObjectName("sectionLabel")
-        head.addWidget(name_lbl)
-        head.addStretch(1)
-        head.addWidget(QLabel("من تاريخ"))
+        name_lbl.setObjectName("dialogTitle")
+        root.addWidget(name_lbl)
+
+        # بطاقة الفلاتر (تلتف عند ضيق المساحة — بلا أزرار مغطاة)
+        card = QFrame()
+        card.setObjectName("filterCard")
+        flay = FlowLayout(margin=0, spacing=10)
+        card.setLayout(flay)
+        card.setStyleSheet("#filterCard { padding: 10px 14px; }")
         self.from_edit = VDateEdit()
         self.from_edit.set_iso(f"{date.today().year}-01-01")
-        head.addWidget(self.from_edit)
-        head.addWidget(QLabel("إلى تاريخ"))
         self.to_edit = VDateEdit()
-        head.addWidget(self.to_edit)
-        refresh_btn = QPushButton("🔄 عرض")
+        flay.add(self._pair("من تاريخ", self.from_edit))
+        flay.add(self._pair("إلى تاريخ", self.to_edit))
+        refresh_btn = QPushButton("🔄  عرض")
         refresh_btn.setObjectName("primary")
+        refresh_btn.setFixedHeight(36)
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_btn.clicked.connect(self.load)
-        head.addWidget(refresh_btn)
-        root.addLayout(head)
+        flay.add(refresh_btn)
+        root.addWidget(card)
 
         self.table = PlainTable(self.headers())
         root.addWidget(self.table, 1)
 
         self.summary = QLabel("")
         self.summary.setObjectName("sectionLabel")
+        self.summary.setWordWrap(True)
         root.addWidget(self.summary)
 
+        # شريط أدوات سفلي: التصدير والطباعة
         from .widgets import ExportBar
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
         bar = ExportBar()
         bar.excelClicked.connect(lambda: self.export("excel"))
         bar.pdfClicked.connect(lambda: self.export("pdf"))
         bar.printClicked.connect(lambda: self.export("print"))
-        root.addWidget(bar)
+        bottom.addWidget(bar)
+        root.addLayout(bottom)
 
         self.load()
+
+    def _pair(self, label: str, widget: QWidget) -> QWidget:
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        lab = QLabel(label)
+        lab.setObjectName("filterLabel")
+        h.addWidget(lab)
+        h.addWidget(widget)
+        return wrap
 
     # تُعرَّف في الفئات الفرعية -------------------------------------------
     def headers(self) -> list[str]:

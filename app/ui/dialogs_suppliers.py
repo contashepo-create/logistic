@@ -16,7 +16,8 @@ from ..core.rules import RuleError
 from ..utils import fmt
 from ..utils.fmt import PURCHASE_EXPENSE_CATEGORIES
 from .widgets import (
-    AccountCombo, AmountEdit, DictCombo, FormDialog, VDateEdit, _row_button, warn,
+    AccountCombo, AmountEdit, DictCombo, FormDialog, VDateEdit, _row_button,
+    install_row_actions, make_actions_widget, warn,
 )
 
 
@@ -282,6 +283,8 @@ class PurchaseInvoiceDialog(QDialog):
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
+        # عمود العمليات بعرض محسوب (زر أو زرين حسب الوضع)
+        install_row_actions(self.table, 6, n_buttons=2)
         iv.addWidget(self.table, 1)
         root.addWidget(items_box, 1)
 
@@ -351,6 +354,7 @@ class PurchaseInvoiceDialog(QDialog):
     def refresh(self) -> None:
         self.table.setRowCount(len(self.items))
         for r, it in enumerate(self.items):
+            self.table.setRowHeight(r, 44)
             gross = float(it.get("qty", 0) or 0) * float(it.get("unit_price", 0) or 0)
             vals = [it.get("item_name", ""), it.get("unit", "") or "—",
                     fmt.money(it.get("qty", 1)), fmt.money(it.get("unit_price", 0)),
@@ -359,18 +363,15 @@ class PurchaseInvoiceDialog(QDialog):
                 item = QTableWidgetItem(str(v))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, item)
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(2, 1, 2, 1)
-            lay.addStretch(1)
+            buttons = []
             if not self.read_only:
-                lay.addWidget(_row_button(
-                    "✏️", "تعديل", "rowBtn",
+                buttons.append(_row_button(
+                    "✏", "تعديل", "rowBtnEdit",
                     lambda _=False, x=r: self.edit_item(x)))
-                lay.addWidget(_row_button(
-                    "🗑️", "حذف", "rowBtnDanger",
+                buttons.append(_row_button(
+                    "🗑", "حذف", "rowBtnDanger",
                     lambda _=False, x=r: self.del_item(x)))
-            self.table.setCellWidget(r, 6, w)
+            self.table.setCellWidget(r, 6, make_actions_widget(buttons))
         totals = calc.purchase_totals(self.items, self.included_check.isChecked())
         self.totals.set_value("الإجمالي قبل الضريبة", totals["net"])
         self.totals.set_value("ضريبة القيمة المضافة", totals["vat"])

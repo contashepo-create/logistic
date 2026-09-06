@@ -21,7 +21,7 @@ class SettingsPage(QWidget):
                                "بيانات الشركة تظهر في ترويسة كل التقارير والفواتير",
                                show_add=False, show_search=False)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.frame)
 
         conn = db.get_conn()
