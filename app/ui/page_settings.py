@@ -200,7 +200,11 @@ class SettingsPage(QWidget):
             "company_postal_code": profile["postal_code"],
             "company_additional_no": profile["additional_no"],
         }
-        for key, value in values.items():
-            repo.set_setting(conn, key, value)
+        try:
+            # التحقق المركزي في طبقة المستودع (مطابق لـ validateCompanyFields)
+            repo.save_company_settings(conn, values)
+        except Exception as e:  # noqa: BLE001
+            warn(self, str(e))
+            return
         self._refresh_zatca_status()
         info(self, "تم حفظ الإعدادات بنجاح.")

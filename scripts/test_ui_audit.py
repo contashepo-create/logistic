@@ -334,9 +334,22 @@ set_page = pages["الإعدادات"]
 set_page.name_edit.setText("شركة الفحص الشامل <للنقل>")
 set_page.save()
 conn2 = db.get_conn()
+# الوسوم تُنزع عند الحفظ (تعقيم المدخلات) فلا تصل للترويسة أصلاً
+saved_name = repo.get_setting(conn2, "company_name", "")
+check("وسوم HTML تُنزع من اسم الشركة عند الحفظ",
+      "<" not in saved_name and "شركة الفحص الشامل" in saved_name,
+      f"({saved_name!r})")
 html = exporter.build_report_html(conn2, title="فحص", headers=["أ"], rows=[["ب"]])
-check("اسم الشركة الجديد يظهر في الترويسة مهرباً",
-      "شركة الفحص الشامل &lt;للنقل&gt;" in html)
+check("اسم الشركة الجديد يظهر في الترويسة", saved_name in html)
+# التهريب يبقى طبقة دفاع ثانية لو وصلت وسوم بأي طريق
+conn2.execute("UPDATE settings SET value=? WHERE key='company_name'",
+              ("<img src=x onerror=alert(1)>",))
+conn2.commit()
+html2 = exporter.build_report_html(conn2, title="فحص", headers=["أ"], rows=[["ب"]])
+check("الوسم الخبيث يُهرَّب في الترويسة لا يُنفَّذ",
+      "<img" not in html2 and "&lt;img" in html2)
+conn2.execute("UPDATE settings SET value=? WHERE key='company_name'", (saved_name,))
+conn2.commit()
 # النقر على زر النسخة الاحتياطية فعلياً
 backup_btn = next((b for b in set_page.findChildren(QPushButton)
                    if "احتياطية" in b.text()), None)

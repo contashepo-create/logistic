@@ -42,6 +42,73 @@ def set_setting(conn, key: str, value: str) -> None:
     conn.commit()
 
 
+# مفاتيح إعدادات الشركة المسموح تعديلها + سقف طول كل منها
+# (مطابق لـ COMPANY_FIELDS + maxByColumn في نسخة الويب)
+COMPANY_SETTING_LIMITS: dict[str, int] = {
+    "company_name": 160, "company_name_en": 120, "company_phone": 30,
+    "company_email": 254, "company_website": 200, "company_address": 300,
+    "company_tax_number": 20, "company_commercial_reg": 30,
+    "company_unified_number": 20, "company_entity_type": 30,
+    "company_tax_status": 30, "company_country": 2, "company_region": 80,
+    "company_city": 80, "company_district": 100, "company_street": 160,
+    "company_building_no": 12, "company_postal_code": 12,
+    "company_additional_no": 12, "company_address_note": 300,
+    "currency": 12, "vat_note": 500, "vat_rate": 12, "logo_path": 300,
+}
+URL_RE = re.compile(r"^https?://[^\s]{4,200}$", re.IGNORECASE)
+
+
+def save_company_settings(conn, values: dict) -> None:
+    """حفظ إعدادات الشركة مع تحقق مركزي في طبقة المستودع.
+
+    التحقق هنا لا في الواجهة فقط: رقم الشركة الضريبي يدخل رمز ZATCA
+    المطبوع على كل فاتورة، فأي قيمة فاسدة تفسد الامتثال الضريبي.
+    """
+    if not values:
+        return
+    cleaned: dict[str, str] = {}
+    for key, value in values.items():
+        if key not in COMPANY_SETTING_LIMITS:
+            raise RuleError(f"إعداد غير معروف: {key}")
+        limit = COMPANY_SETTING_LIMITS[key]
+        if key == "vat_rate":
+            try:
+                rate = float(value)
+            except (TypeError, ValueError):
+                raise RuleError("نسبة ضريبة القيمة المضافة غير صالحة.") from None
+            if not 0 <= rate <= 100:
+                raise RuleError("نسبة الضريبة يجب أن تكون بين 0 و100.")
+            cleaned[key] = f"{rate:g}"
+            continue
+        text = safe_text(value, key, limit)
+        if key == "company_name" and text and not is_plausible_identity_text(text):
+            raise RuleError("اسم الشركة غير صحيح أو وهمي.")
+        if key == "company_phone" and text:
+            text = safe_phone(text, label="هاتف الشركة")
+        if key == "company_email" and text:
+            text = safe_email(text)
+        if key == "company_website" and text and not URL_RE.match(text):
+            raise RuleError("رابط الموقع يجب أن يبدأ بـ http:// أو https://")
+        if key == "company_entity_type" and text \
+                and text not in tax.ENTITY_TYPES:
+            raise RuleError("نوع الكيان غير صالح.")
+        if key == "company_tax_status" and text \
+                and text not in tax.TAX_STATUSES:
+            raise RuleError("الحالة الضريبية غير صالحة.")
+        cleaned[key] = text
+    # الحزمة الضريبية تُطبَّع وتُتحقق ككتلة واحدة
+    profile = tax.normalize_tax_profile({
+        c: cleaned.get(f"company_{c}", get_setting(conn, f"company_{c}", ""))
+        for c in TAX_COLUMNS})
+    errors = tax.validate_tax_profile(profile)
+    if errors:
+        raise RuleError("\n".join(errors))
+    for col in TAX_COLUMNS:
+        cleaned[f"company_{col}"] = profile[col]
+    for key, value in cleaned.items():
+        set_setting(conn, key, value)
+
+
 def company_info(conn) -> dict:
     return {k: get_setting(conn, k, v) for k, v in db.DEFAULT_SETTINGS.items()}
 
@@ -600,8 +667,10 @@ def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
         raise RuleError("عدد بنود النقل في الفاتورة أكبر من الحد المسموح.")
     notes = _txt(data.get("notes", ""), "ملاحظات الفاتورة")
     container_number = _txt(data.get("container_number", ""), "رقم الحاوية", 100)
-    attachments = [_txt(a, "اسم المرفق", 180)
-                   for a in (data.get("attachments") or []) if str(a).strip()][:10]
+    raw_attachments = [a for a in (data.get("attachments") or []) if str(a).strip()]
+    if len(raw_attachments) > 10:
+        raise RuleError("الحد الأقصى للمرفقات هو 10 ملفات.")
+    attachments = [_txt(a, "اسم المرفق", 180) for a in raw_attachments]
     vat_rate = (current_vat_rate(conn) if data.get("vat_rate") in (None, "")
                 else _bounded(data["vat_rate"], "نسبة الضريبة", 0, 100))
 
