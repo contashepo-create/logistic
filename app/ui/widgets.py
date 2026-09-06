@@ -10,14 +10,14 @@ import sqlite3
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..core import calc, db
+from ..core import calc
 from ..core.rules import RuleError
-from ..utils import exporter, fmt
-from ..utils.fmt import normalize_digits, parse_float
+from ..utils import fmt
+from ..utils.fmt import parse_float
 
 
 # ---------------------------------------------------------------------------
@@ -489,17 +489,3 @@ class FormDialog(QDialog):
 # ---------------------------------------------------------------------------
 # أدوات تصدير مختصرة
 # ---------------------------------------------------------------------------
-def do_export_excel(widget: QWidget, conn: sqlite3.Connection, title: str,
-                    headers: list[str], rows: list[list],
-                    summary_lines: list[tuple[str, str]] | None = None) -> None:
-    exporter.export_excel(widget, conn, title, headers, rows,
-                          default_name=f"{title}.xlsx", summary_lines=summary_lines)
-
-
-def build_export_html(conn: sqlite3.Connection, title: str, subtitle: str,
-                      headers: list[str], rows: list[list],
-                      summary_lines: list[tuple[str, str]] | None = None,
-                      center_from: int = 1) -> str:
-    return exporter.build_report_html(
-        conn, title=title, subtitle=subtitle, headers=headers, rows=rows,
-        summary_lines=summary_lines, center_from=center_from)

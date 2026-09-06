@@ -66,10 +66,19 @@ class ShadowLedger:
                     "salaries": 0.0, "advances": 0.0, "maintenance": 0.0,
                     "general": 0.0}
 
-    def invoice(self, cid, total_trips, total_expenses):
-        self.cust[cid] += total_trips
-        self.pnl["transport"] += total_trips
+    def invoice(self, cid, total_trips, total_expenses, billable=0.0,
+                cash_out=None):
+        """total_expenses هنا = مصروفات التكلفة فقط (لا تشمل مصروفات العميل).
+
+        billable: مصروفات بتمويل العميل — تزيد مطالبتنا عليه ولا تُعد إيراداً.
+        cash_out: {(kind, account_id): amount} مصروفات نقدية أنشأت سندات تلقائية.
+        """
+        self.cust[cid] += total_trips + billable
+        # مصروف العميل يدخل وعاء الإيراد (كما في نسخة الويب: transport += sub)
+        self.pnl["transport"] += total_trips + billable
         self.pnl["direct"] += total_expenses
+        for key, amount in (cash_out or {}).items():
+            self.acc[key] = self.acc.get(key, 0.0) - amount
 
     def invoice_edit_delta(self, cid, d_trips, d_expenses):
         self.cust[cid] += d_trips
@@ -124,19 +133,30 @@ class ShadowLedger:
             check(f"[ظل/{ctx}] P&L {k}",
                   abs(round(pnl[col], 2) - round(self.pnl[k], 2)) < 0.011,
                   f"({pnl[col]} مقابل {round(self.pnl[k], 2)})")
-        # معادلة ميزان المراجعة: net − Δأصول = (مباشر − سندات رحلات)
+        # معادلة قائمة الدخل ذاتها
+        check(f"[ظل/{ctx}] صافي الربح = الإيراد − المصروف",
+              abs(round(pnl["net"], 2) - round(pnl["total_revenue"]
+                                               - pnl["total_expenses"], 2)) < 0.011)
+        # معادلة ميزان المراجعة المشتقة:
+        #   net    = (نقلات + مصروف العميل) − (نقدي + غير نقدي)
+        #   Δالأصول = (الإيراد + الضريبة المحصّلة) − الصرف النقدي
+        #   ⇒ net − Δالأصول = −(مصروف غير نقدي) − الضريبة المحصّلة
         assets = sum(self.acc.values()) + sum(self.cust.values())
         opened = sum(self._opened_acc) + sum(self._opened_cust)
         d_assets = assets - opened
-        t_pay = float(conn.execute(
-            "SELECT IFNULL(SUM(amount),0) FROM payment_vouchers "
-            "WHERE voucher_type='trip'").fetchone()[0])
-        direct = float(conn.execute(
-            "SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e").fetchone()[0])
-        check(f"[ظل/{ctx}] ميزان المراجعة: net − Δالأصول = سندات الرحلات − المباشر",
-              abs(round(pnl["net"] - d_assets, 2)
-                  - round(t_pay - direct, 2)) < 0.06,
-              f"({round(pnl['net'] - d_assets, 2)} مقابل {round(t_pay - direct, 2)})")
+        noncash = float(conn.execute(
+            "SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e "
+            "WHERE e.source IN ('driver','supplier')").fetchone()[0])
+        expected = round(-noncash - pnl["vat_collected"], 2)
+        actual = round(pnl["net"] - d_assets, 2)
+        check(f"[ظل/{ctx}] ميزان المراجعة: net − Δالأصول = −غير نقدي − ضريبة",
+              abs(actual - expected) < 0.06,
+              f"({actual} مقابل {expected})")
+        # المتطابقة تكون فارغة (0=0) إن لم يولّد السيناريو مصروفات غير نقدية،
+        # فنؤكد وجودها في سياقات العمليات (لا في التجهيز الذي يسبقها).
+        if ctx != "تجهيز":
+            check(f"[ظل/{ctx}] السيناريو ولّد مصروفات غير نقدية (فحص غير فارغ)",
+                  noncash > 0, f"(غير نقدي={round(noncash, 2)})")
 
     _opened_acc: list = []
     _opened_cust: list = []
@@ -145,6 +165,7 @@ class ShadowLedger:
 def main() -> None:  # noqa: C901
     db.init_db()
     conn = db.get_conn()
+    repo.set_setting(conn, "vat_rate", "0")  # سيناريو بلا ضريبة؛ قواعد الضريبة في test_web_parity.py
 
     print("== أ) تجهيز: سنة مالية + بيانات أساسية")
     repo.save_year(conn, {"year": 2026, "date_from": "2026-01-01",
@@ -155,13 +176,13 @@ def main() -> None:  # noqa: C901
     v1 = repo.save_vehicle(conn, {"plate_number": "ت د ق 9", "default_driver_id": d1})
     cb = repo.save_account(conn, "cashbox", {"name": "خزينة تدقيق",
                                              "created_date": "2026-01-01",
-                                             "opening_balance": 10000})
+                                             "opening_balance": 5000000})
     bn = repo.save_account(conn, "bank", {"name": "بنك تدقيق",
                                           "created_date": "2026-01-01",
-                                          "opening_balance": 40000})
+                                          "opening_balance": 5000000})
     ledger = ShadowLedger({c1: 5000.0, c2: -300.0},
-                          {("cashbox", cb): 10000.0, ("bank", bn): 40000.0})
-    ledger._opened_acc = [10000.0, 40000.0]
+                          {("cashbox", cb): 5000000.0, ("bank", bn): 5000000.0})
+    ledger._opened_acc = [5000000.0, 5000000.0]
     ledger._opened_cust = [5000.0, -300.0]
     ledger.compare(conn, "تجهيز")
 
@@ -174,9 +195,15 @@ def main() -> None:  # noqa: C901
                 trips = []
                 for _ in range(rng.randint(1, 3)):
                     price = round(rng.uniform(50, 9000), 3)  # يدخل 3 منازل، النظام يقرّب
-                    exps = [{"expense_type": rng.choice(["trip", "fuel", "card"]),
-                             "amount": round(rng.uniform(5, 400), 3)}
-                            for _ in range(rng.randint(0, 2))]
+                    exps = []
+                    for _ in range(rng.randint(0, 3)):
+                        src = rng.choice(["cash", "driver", "supplier", "customer"])
+                        item = {"expense_type": rng.choice(["trip", "fuel", "card"]),
+                                "amount": round(rng.uniform(5, 400), 3),
+                                "source": src}
+                        if src == "cash":
+                            item.update(account_kind="cashbox", account_id=cb)
+                        exps.append(item)
                     trips.append({"vehicle_id": rng.choice([None, v1]),
                                   "driver_id": rng.choice([None, d1]),
                                   "from_loc": f"س{step}", "to_loc": f"ص{step}",
@@ -184,11 +211,20 @@ def main() -> None:  # noqa: C901
                 cid = rng.choice([c1, c2])
                 d_inv = rng.choice(["2026-02-01", "2026-07-14", "2026-11-30"])
                 total = round(sum(round(t["price"], 2) for t in trips), 2)
-                exp = round(sum(round(e["amount"], 2)
-                                for t in trips for e in t["expenses"]), 2)
+                cash_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] == "cash"), 2)
+                cost_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] in ("cash", "driver", "supplier")), 2)
+                bill_exp = round(sum(round(e["amount"], 2)
+                                     for t in trips for e in t["expenses"]
+                                     if e["source"] == "customer"), 2)
                 repo.save_invoice(conn, {
                     "date": d_inv, "customer_id": cid, "trips": trips})
-                ledger.invoice(cid, total, exp)
+                # المصروفات النقدية أنشأت سندات دفع تلقائية من الخزينة
+                ledger.invoice(cid, total, cost_exp, billable=bill_exp,
+                               cash_out={("cashbox", cb): cash_exp})
             elif op == "recv":
                 kind, aid = rng.choice([("cashbox", cb), ("bank", bn)])
                 amount = round(rng.uniform(10, 4000), 2)
@@ -300,10 +336,7 @@ def main() -> None:  # noqa: C901
         "SELECT id FROM financial_years WHERE year=2027").fetchone()["id"], "closed")
 
     outside = ["2025-12-31", "2028-01-01"]
-    inside = ["2026-06-15"]
     year26 = conn.execute("SELECT id FROM financial_years WHERE year=2026"
-                          ).fetchone()["id"]
-    year27 = conn.execute("SELECT id FROM financial_years WHERE year=2027"
                           ).fetchone()["id"]
     for d in outside:
         reject(f"فاتورة بتاريخ {d}", lambda d=d: repo.save_invoice(conn, {
@@ -355,8 +388,8 @@ def main() -> None:  # noqa: C901
                    "expenses": []}]}, inv_last))
     reject("حذف فاتورة داخل سنة مغلقة", lambda: repo.delete_invoice(conn, inv_last))
     repo.set_year_status(conn, year26, "open")
-    repo.delete_invoice(conn, inv_last)
-    ledger.invoice_delete(c1, 10, 0)
+    reject("حذف فاتورة بعد الإصدار ممنوع", lambda: repo.delete_invoice(conn, inv_last))
+    # ملاحظة: حذف الفاتورة صار ممنوعاً، لذا يبقى أثرها في الظل كما في التطبيق
     check("إعادة الفتح تعيد السماح بالعمليات", True)
 
     print("== د) قيود جديدة: تداخل السنوات، شهر الراتب، السقوف والأنواع")
@@ -415,10 +448,11 @@ def main() -> None:  # noqa: C901
     conn.execute("UPDATE invoices SET attachments='[]' WHERE id=?", (inv_any,))
     conn.commit()
     # bidi والتحكم في الأسماء
+    # محارف الاتجاه الخفية (bidi) تُنزع عند الإدخال — تمنع انتحال عرض الاسم
     bidi = "حساب\u202e4019\u202cمراجعة"
     bid = repo.save_customer(conn, {"name": bidi, "opening_balance": 0})
-    check("اسم بمحارف bidi يُخزن كما هو دون تفسير",
-          repo.get_customer(conn, bid)["name"] == bidi)
+    check("محارف bidi الخفية تُنزع من الاسم",
+          repo.get_customer(conn, bid)["name"] == "حساب4019مراجعة")
     # تحليل استاتيكي: لا استدعاءات خطرة في كود التطبيق
     dangerous = []
     pat = re.compile(r"(?<![.\w])(eval|exec)\(|pickle\.|os\.system|subprocess\.|"
@@ -437,14 +471,22 @@ def main() -> None:  # noqa: C901
                     r'\{(calc\.account_table\([a-z_]+\)|calc\.account_table|tbl|table|p_cond|inv_cond|pay_cond|cond)\}', ln):
                 fsql.append(f"{f}:{i}")
     check("لا SQL منسق بمدخلات ديناميكية غير آمنة", not fsql, str(fsql[:5]))
-    # حقن من الطريق الثاني: القيم المحفوظة تظهر في التصدير مهربة
-    from app.utils import exporter as exp
+    # الطبقة الأولى: النمط الهجومي يُرفض عند الإدخال أصلاً
     evil = "<img src=x onerror=alert(1)>"
-    eid = repo.save_customer(conn, {"name": evil, "opening_balance": 0})
-    html = exp.build_report_html(conn, title="t", headers=["n"],
-                                 rows=[[repo.get_customer(conn, eid)["name"]]])
-    check("الاسم الخبيث يظهر مهرباً في كل التصديرات", evil not in html)
-    conn.execute("DELETE FROM customers WHERE id IN (?, ?)", (bid, eid))
+    reject("وسم HTML هجومي يُرفض عند الإدخال",
+           lambda: repo.save_customer(conn, {"name": evil, "opening_balance": 0}))
+    # الطبقة الثانية: لو وصل وسم للتصدير بأي طريق، يظهر مهرباً لا منفَّذًا
+    from app.utils import exporter as exp
+    html = exp.build_report_html(conn, title="t", headers=["n"], rows=[[evil]])
+    check("الوسم الخبيث يظهر مهرباً في التصدير", evil not in html
+          and "&lt;img" in html)
+    # الطبقة الثالثة: حقن صيغ Excel يُحيَّد في الملف المصدَّر
+    from app.core.security import neutralize_formula
+    check("حقن صيغة Excel يُحيَّد",
+          neutralize_formula("=cmd|' /C calc'!A0") == "'=cmd|' /C calc'!A0"
+          and neutralize_formula("عميل عادي") == "عميل عادي"
+          and neutralize_formula("@SUM(A1)") == "'@SUM(A1)")
+    conn.execute("DELETE FROM customers WHERE id=?", (bid,))
     conn.commit()
 
     print("== و) كشوف بحدود جديدة")

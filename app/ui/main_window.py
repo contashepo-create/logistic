@@ -11,21 +11,25 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_TITLE, __version__
-from ..core import db, repo
-from ..core.rules import has_open_year
+from ..core import telegram_bot, db, repo
 from .page_settings import SettingsPage
 from .pages_master import CustomersPage, EmployeesPage, VehiclesPage, YearsPage
 from .pages_ops import InvoicesPage, PaymentsPage, ReceiptsPage
 from .pages_payroll import PayrollPage
 from .pages_reports import (
-    CustomerStatementReportPage, EmployeeStatementReportPage, PnlReportPage,
-    TripProfitsReportPage, VehiclesReportPage,
+    AgingReportPage, CustomerStatementReportPage, EmployeeStatementReportPage,
+    PnlReportPage, SupplierStatementReportPage, TripProfitsReportPage,
+    VehiclesReportPage,
+)
+from .pages_suppliers import (
+    AdvancesPage, DeductionsPage, NotesPage, PurchasesPage, SuppliersPage,
 )
 from .pages_treasury import BanksPage, CashboxesPage
 
 NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
     ("📁 البيانات الأساسية", [
         ("العملاء", CustomersPage),
+        ("الموردون", SuppliersPage),
         ("الموظفون والسائقون", EmployeesPage),
         ("السيارات", VehiclesPage),
         ("السنوات المالية", YearsPage),
@@ -36,15 +40,21 @@ NAV_SECTIONS: list[tuple[str, list[tuple[str, type]]]] = [
     ]),
     ("🔄 العمليات اليومية", [
         ("فواتير النقل", InvoicesPage),
+        ("فواتير المشتريات", PurchasesPage),
         ("سندات القبض", ReceiptsPage),
         ("سندات الدفع", PaymentsPage),
+        ("إشعارات مدين/دائن", NotesPage),
     ]),
     ("💰 الرواتب", [
         ("إدارة الرواتب", PayrollPage),
+        ("متابعة السلفيات", AdvancesPage),
+        ("الخصومات", DeductionsPage),
     ]),
     ("📊 التقارير الذكية", [
         ("أرباح الفواتير والرحلات", TripProfitsReportPage),
         ("كشف حساب عميل", CustomerStatementReportPage),
+        ("كشف حساب مورّد", SupplierStatementReportPage),
+        ("أعمار الديون", AgingReportPage),
         ("كشف حساب موظف/سائق", EmployeeStatementReportPage),
         ("أداء السيارات", VehiclesReportPage),
         ("الأرباح والخسائر (P&L)", PnlReportPage),
@@ -121,6 +131,25 @@ class MainWindow(QMainWindow):
         self.nav_list.setCurrentRow(1)
         QTimer.singleShot(0, self._first_run_check)
         self.refresh_year_info()
+
+        # بوت التليجرام: يعمل تلقائياً إن كان مُعدّاً (رمز + معرّف المالك)،
+        # ويُوقَف عند إغلاق التطبيق. الفشل لا يمنع فتح التطبيق.
+        self.telegram_bot = None
+        try:
+            bot = telegram_bot.TelegramBot(db.get_conn)
+            if bot.start():
+                self.telegram_bot = bot
+        except Exception:  # noqa: BLE001
+            self.telegram_bot = None
+
+    def closeEvent(self, event) -> None:
+        """إيقاف خيط البوت قبل الإغلاق حتى لا يبقى معلقاً."""
+        if self.telegram_bot is not None:
+            try:
+                self.telegram_bot.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     def _nav_changed(self, row: int) -> None:

@@ -24,7 +24,47 @@ PAYMENT_TYPES = {
     "trip": "مصروف يخص رحلة",
     "advance": "سلفة موظف/سائق",
     "vehicle": "مصروف لسيارة",
+    "supplier": "سداد لمورّد",
+    "purchase": "دفع فاتورة مشتريات نقدية",
+    "owner": "سحب نقدي لصاحب المنشأة",
     "general": "مصروف عام",
+}
+
+# مصدر تمويل مصروف النقلة وأثره المحاسبي (مطابق لنسخة الويب)
+EXPENSE_SOURCES = {
+    "cash": "نقداً من خزينة/بنك",
+    "driver": "من عهدة السائق",
+    "supplier": "آجل على مورد",
+    "customer": "يتحمّله العميل",
+}
+
+EXPENSE_SOURCE_HINTS = {
+    "cash": "يُنشأ سند دفع تلقائي ويُخصم فوراً من رصيد الخزينة/البنك.",
+    "driver": "يُقيَّد على حساب السائق (يُخصم من عهدته/مستحقاته) بلا تحريك خزينة.",
+    "supplier": "التزام آجل على المورد يُسدَّد لاحقاً بسند دفع يدوي.",
+    "customer": "لا يُعد تكلفة — يُضاف على الفاتورة ويزيد المستحق على العميل.",
+}
+
+# بنود المصروفات التي تظهر مستقلة في تقرير الأرباح والخسائر
+PURCHASE_EXPENSE_CATEGORIES = {
+    "fuel": "وقود وزيوت",
+    "maintenance": "صيانة وإصلاح",
+    "spare_parts": "قطع غيار",
+    "tires": "إطارات وكاوتش",
+    "rent": "إيجارات",
+    "utilities": "كهرباء ومياه وخدمات",
+    "communications": "اتصالات وإنترنت",
+    "insurance": "تأمين",
+    "government_fees": "رسوم حكومية وتراخيص",
+    "office": "مصروفات مكتبية",
+    "hospitality": "ضيافة ونظافة",
+    "professional_fees": "أتعاب مهنية",
+    "other": "مشتريات ومصروفات أخرى",
+}
+
+NOTE_TYPES = {
+    "credit": "إشعار دائن (مرتجع/خصم)",
+    "debit": "إشعار مدين (إضافة)",
 }
 
 VEHICLE_EXPENSES = {
@@ -77,11 +117,6 @@ def money(x) -> str:
     return f"{v:,.2f}"
 
 
-def today_iso() -> str:
-    from datetime import date
-    return date.today().isoformat()
-
-
 def month_name(month: int) -> str:
     return MONTHS_AR[month - 1] if 1 <= month <= 12 else str(month)
 
@@ -93,3 +128,82 @@ def period_label(year: int, month: int) -> str:
 def clean(text) -> str:
     """تنظيف نص للإدخال (إزالة الفراغات الزائدة)."""
     return re.sub(r"\s+", " ", str(text or "")).strip()
+
+# ---------------------------------------------------------------------------
+# التفقيط (المبلغ كتابةً) — مطابق لـ format.ts في نسخة الويب
+# ---------------------------------------------------------------------------
+_ONES = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية",
+         "تسعة", "عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر",
+         "خمسة عشر", "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"]
+_TENS = ["", "", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون",
+         "تسعون"]
+_HUNDREDS = ["", "مائة", "مائتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة",
+             "سبعمائة", "ثمانمائة", "تسعمائة"]
+
+
+def _below_1000(n: int) -> str:
+    parts: list[str] = []
+    h, rest = divmod(n, 100)
+    if h:
+        parts.append(_HUNDREDS[h])
+    if rest:
+        if rest < 20:
+            parts.append(_ONES[rest])
+        else:
+            u, t = rest % 10, rest // 10
+            parts.append(f"{_ONES[u]} و{_TENS[t]}" if u else _TENS[t])
+    return " و".join(parts)
+
+
+def _group_word(count: int, forms: tuple[str, str, str, str]) -> str:
+    """forms = (مفرد، مثنى، جمع 3–10، تمييز 11+)."""
+    if count == 1:
+        return forms[0]
+    if count == 2:
+        return forms[1]
+    return f"{_below_1000(count)} {forms[2] if 3 <= count <= 10 else forms[3]}"
+
+
+def number_to_arabic_words(value: float) -> str:
+    n = int(abs(float(value or 0)))
+    if n == 0:
+        return "صفر"
+    chunks = [
+        (n // 1_000_000_000, ("مليار", "ملياران", "مليارات", "مليار")),
+        ((n % 1_000_000_000) // 1_000_000, ("مليون", "مليونان", "ملايين", "مليون")),
+        ((n % 1_000_000) // 1000, ("ألف", "ألفان", "آلاف", "ألفاً")),
+    ]
+    words = [_group_word(c, f) for c, f in chunks if c]
+    tail = n % 1000
+    if tail:
+        words.append(_below_1000(tail))
+    return " و".join(words)
+
+
+def amount_to_arabic_words(amount: float, currency: str = "ريال",
+                           fraction: str = "هللة") -> str:
+    negative = (amount or 0) < 0
+    rounded = round(abs(float(amount or 0)) + 1e-9, 2)
+    whole = int(rounded)
+    cents = int(round((rounded - whole) * 100))
+    out = f"{number_to_arabic_words(whole)} {currency}"
+    if cents:
+        out += f" و{number_to_arabic_words(cents)} {fraction}"
+    out += " فقط لا غير"
+    return f"سالب {out}" if negative else out
+
+
+# ---------------------------------------------------------------------------
+# جانب الرصيد (مطابق لـ balanceSide / balanceText)
+# ---------------------------------------------------------------------------
+def balance_side(value: float) -> str:
+    v = round(float(value or 0), 2)
+    return "debit" if v > 0 else ("credit" if v < 0 else "zero")
+
+
+def balance_text(value: float) -> str:
+    v = abs(round(float(value or 0), 2))
+    side = balance_side(value)
+    if side == "zero":
+        return f"{money(0)} (مسدَّد)"
+    return f"{money(v)} ({'عليه' if side == 'debit' else 'له'})"

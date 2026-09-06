@@ -9,15 +9,20 @@
 """
 from __future__ import annotations
 
+import re
 import json
 import shutil
 import sqlite3
 from pathlib import Path
 
-from . import db, calc
+from . import calc, db, tax
 from .rules import (
     RuleError, ensure_date_in_open_year, ensure_movement_editable,
-    ensure_positive, ensure_not_blank,
+    ensure_positive, ensure_not_blank, safe_financial_year
+)
+from .security import (
+    is_plausible_identity_text, safe_account_number, safe_address,
+    safe_company_name, safe_email, safe_iban, safe_phone, safe_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,8 +42,120 @@ def set_setting(conn, key: str, value: str) -> None:
     conn.commit()
 
 
+# مفاتيح إعدادات الشركة المسموح تعديلها + سقف طول كل منها
+# (مطابق لـ COMPANY_FIELDS + maxByColumn في نسخة الويب)
+COMPANY_SETTING_LIMITS: dict[str, int] = {
+    "company_name": 160, "company_name_en": 120, "company_phone": 30,
+    "company_email": 254, "company_website": 200, "company_address": 300,
+    "company_tax_number": 20, "company_commercial_reg": 30,
+    "company_unified_number": 20, "company_entity_type": 30,
+    "company_tax_status": 30, "company_country": 2, "company_region": 80,
+    "company_city": 80, "company_district": 100, "company_street": 160,
+    "company_building_no": 12, "company_postal_code": 12,
+    "company_additional_no": 12, "company_address_note": 300,
+    "currency": 12, "vat_note": 500, "vat_rate": 12, "logo_path": 300,
+}
+URL_RE = re.compile(r"^https?://[^\s]{4,200}$", re.IGNORECASE)
+
+
+def save_company_settings(conn, values: dict) -> None:
+    """حفظ إعدادات الشركة مع تحقق مركزي في طبقة المستودع.
+
+    التحقق هنا لا في الواجهة فقط: رقم الشركة الضريبي يدخل رمز ZATCA
+    المطبوع على كل فاتورة، فأي قيمة فاسدة تفسد الامتثال الضريبي.
+    """
+    if not values:
+        return
+    cleaned: dict[str, str] = {}
+    for key, value in values.items():
+        if key not in COMPANY_SETTING_LIMITS:
+            raise RuleError(f"إعداد غير معروف: {key}")
+        limit = COMPANY_SETTING_LIMITS[key]
+        if key == "vat_rate":
+            try:
+                rate = float(value)
+            except (TypeError, ValueError):
+                raise RuleError("نسبة ضريبة القيمة المضافة غير صالحة.") from None
+            if not 0 <= rate <= 100:
+                raise RuleError("نسبة الضريبة يجب أن تكون بين 0 و100.")
+            cleaned[key] = f"{rate:g}"
+            continue
+        text = safe_text(value, key, limit)
+        if key == "company_name":
+            text = safe_company_name(text)
+        if key == "company_address":
+            # العنوان يُطبع على كل فاتورة — لا يقبل قيمة فارغة أو وهمية
+            text = safe_address(text, "عنوان الشركة")
+        if key == "company_phone" and text:
+            text = safe_phone(text, label="هاتف الشركة")
+        if key == "company_email" and text:
+            text = safe_email(text)
+        if key == "company_website" and text and not URL_RE.match(text):
+            raise RuleError("رابط الموقع يجب أن يبدأ بـ http:// أو https://")
+        if key == "company_entity_type" and text \
+                and text not in tax.ENTITY_TYPES:
+            raise RuleError("نوع الكيان غير صالح.")
+        if key == "company_tax_status" and text \
+                and text not in tax.TAX_STATUSES:
+            raise RuleError("الحالة الضريبية غير صالحة.")
+        cleaned[key] = text
+    # الحزمة الضريبية تُطبَّع وتُتحقق ككتلة واحدة
+    profile = tax.normalize_tax_profile({
+        c: cleaned.get(f"company_{c}", get_setting(conn, f"company_{c}", ""))
+        for c in TAX_COLUMNS})
+    errors = tax.validate_tax_profile(profile)
+    if errors:
+        raise RuleError("\n".join(errors))
+    for col in TAX_COLUMNS:
+        cleaned[f"company_{col}"] = profile[col]
+    for key, value in cleaned.items():
+        set_setting(conn, key, value)
+
+
 def company_info(conn) -> dict:
     return {k: get_setting(conn, k, v) for k, v in db.DEFAULT_SETTINGS.items()}
+
+
+def current_vat_rate(conn) -> float:
+    """نسبة ضريبة القيمة المضافة المعتمدة في الإعدادات (الافتراضي 15%)."""
+    try:
+        return max(0.0, min(100.0, float(get_setting(conn, "vat_rate", "15") or 15)))
+    except (TypeError, ValueError):
+        return 15.0
+
+
+def _bounded(value, field: str, low: float, high: float,
+             as_int: bool = False) -> float:
+    """رقم ضمن نطاق محدد (يمنع القيم الفاسدة والضخمة)."""
+    try:
+        v = float(str(value).strip() if value not in (None, "") else "nan")
+    except (TypeError, ValueError):
+        raise RuleError(f"قيمة «{field}» غير صالحة.")
+    if v != v or v in (float("inf"), float("-inf")):
+        raise RuleError(f"قيمة «{field}» غير صالحة.")
+    if v < low or v > high:
+        raise RuleError(f"«{field}» يجب أن تكون بين {low} و {high}.")
+    if as_int:
+        # الويب يرفض الكسور في وضع العدد الصحيح ولا يقرّبها صامتاً:
+        # تقريب 12.5 إلى 12 في شهر الراتب أو مهلة السداد إخفاء لخطأ المستخدم.
+        if v != int(v):
+            raise RuleError(f"حقل «{field}» يجب أن يكون عدداً صحيحاً.")
+        return int(v)
+    return round(v, 2)
+
+
+def _round_money(value) -> float:
+    return tax.round2(_m(value))
+
+
+def _positive_id(value, field: str) -> int:
+    try:
+        v = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise RuleError(f"معرّف «{field}» غير صالح.")
+    if v <= 0:
+        raise RuleError(f"اختر {field}.")
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -62,20 +179,27 @@ def _count(conn, sql: str, params=()) -> int:
 def _m(x) -> float:
     """تقنية دفاعية: كل مبلغ يُخزَّن مقرباً لمنزلتين عشريتين وضمن سقف منطقي."""
     try:
-        v = round(float(x or 0), 2)
+        raw = float(x if x not in (None, "") else 0)
     except (TypeError, ValueError):
         raise RuleError("قيمة مبلغ غير صالحة.")
+    # NaN يمر من كل مقارنات الحجم (abs(nan) > سقف == False) فيجب رفضه صراحة،
+    # وإلا نزل إلى SQLite كـ NULL وفشل بقيد NOT NULL برسالة إنجليزية خام.
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        raise RuleError("قيمة مبلغ غير صالحة.")
+    v = round(raw, 2)
     if abs(v) > 999_999_999_999.0:
         raise RuleError("المبلغ خارج النطاق المسموح (الحد 999,999,999,999).")
     return v
 
 
 def _txt(value, field: str, max_len: int = 5000) -> str:
-    """تحديد طول النصوص لمنع إغراق قاعدة البيانات (DoS)."""
-    s_ = str(value or "")
-    if len(s_) > max_len:
-        raise RuleError(f"حقل {field} طويل جداً (الحد {max_len} محرفاً).")
-    return s_
+    """تحقق وتعقيم مركزي لكل نص قبل وصوله إلى قاعدة البيانات.
+
+    يمنع: إغراق قاعدة البيانات (الطول)، محارف التحكم والاتجاهات الخفية،
+    الأنماط الهجومية الصريحة (حقن SQL/HTML/قوالب/اجتياز مسارات).
+    مطابق لـ `txt` في نسخة الويب.
+    """
+    return safe_text(value, field, max_len)
 
 
 # ---------------------------------------------------------------------------
@@ -90,13 +214,17 @@ def get_year(conn, year_id: int) -> sqlite3.Row | None:
 
 
 def save_year(conn, data: dict, year_id: int | None = None) -> int:
-    year = int(data["year"])
-    date_from, date_to = data["date_from"], data["date_to"]
-    ensure_not_blank(str(year), "السنة")
-    ensure_not_blank(date_from, "تاريخ البداية")
-    ensure_not_blank(date_to, "تاريخ النهاية")
-    if date_from >= date_to:
-        raise RuleError("تاريخ بداية السنة يجب أن يكون قبل تاريخ نهايتها.")
+    ensure_not_blank(str(data.get("year", "")), "السنة")
+    # تحقق الصيغة ووجود التاريخ فعلياً ومدة السنة (مطابقة لنسخة الويب)
+    date_from, date_to, derived_year = safe_financial_year(
+        data.get("date_from"), data.get("date_to"))
+    try:
+        year = int(data["year"])
+    except (TypeError, ValueError):
+        raise RuleError("السنة المالية يجب أن تكون رقماً صحيحاً.") from None
+    if year != derived_year:
+        raise RuleError(
+            f"رقم السنة ({year}) لا يطابق سنة تاريخ البداية ({derived_year}).")
     dup = conn.execute(
         "SELECT id FROM financial_years WHERE year=? AND id != ?",
         (year, year_id or -1),
@@ -191,25 +319,90 @@ def get_customer(conn, customer_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
 
 
+TAX_COLUMNS = (
+    "tax_number", "commercial_reg", "entity_type", "tax_status", "country",
+    "region", "city", "district", "street", "building_no", "postal_code",
+    "additional_no",
+)
+
+
+def _tax_columns_sql(data: dict) -> str:
+    return ", ".join(f"{c}=?" for c in TAX_COLUMNS)
+
+
+def _tax_values(data: dict) -> list:
+    return [data.get(c, "") for c in TAX_COLUMNS]
+
+
+def _ensure_unique_contact(conn, table: str, phone: str, email: str,
+                           exclude_id: int | None, label: str) -> None:
+    """يمنع تسجيل هاتف أو بريد لجهة أخرى (تفادي الحسابات المكررة)."""
+    ex = exclude_id or -1
+    if phone and conn.execute(
+            f"SELECT id FROM {table} WHERE phone=? AND id != ?",
+            (phone, ex)).fetchone():
+        raise RuleError(f"رقم الهاتف مسجل مسبقاً لـ{label} آخر.")
+    if email and conn.execute(
+            f"SELECT id FROM {table} WHERE email=? AND id != ?",
+            (email, ex)).fetchone():
+        raise RuleError(f"البريد الإلكتروني مسجل مسبقاً لـ{label} آخر.")
+
+
 def save_customer(conn, data: dict, customer_id: int | None = None) -> int:
+    """حفظ العميل مع الحزمة الضريبية والعنوان الوطني (مطابق لنسخة الويب)."""
     ensure_not_blank(data.get("name", ""), "اسم العميل")
     for k, label in (("name", "اسم العميل"), ("address", "العنوان"),
-                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+                     ("notes", "الملاحظات"), ("name_en", "الاسم بالإنجليزية"),
+                     ("contact_person", "مسؤول التواصل")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للعميل، وليس قيمة تجريبية أو وهمية.")
+    if data["address"] and not is_plausible_identity_text(data["address"]):
+        raise RuleError("عنوان العميل يبدو غير صحيح أو وهمياً.")
+    if data["contact_person"] and not is_plausible_identity_text(data["contact_person"]):
+        raise RuleError("اسم مسؤول التواصل غير صحيح أو وهمي.")
+    data["phone"] = safe_phone(data.get("phone", ""))
+    data["email"] = safe_email(data.get("email", ""))
+    credit_limit = _m(data.get("credit_limit", 0))
+    if credit_limit < 0:
+        raise RuleError("الحد الائتماني لا يمكن أن يكون سالباً.")
+    data["credit_limit"] = credit_limit
+    data["payment_terms"] = int(_bounded(data.get("payment_terms", 0),
+                                         "مهلة السداد", 0, 3650, True))
+    _ensure_unique_contact(conn, "customers", data["phone"], data["email"],
+                           customer_id, "عميل")
+    # تطبيع الحزمة الضريبية + تحقّق شامل برسائل عربية
+    normalized = tax.normalize_tax_profile({
+        c: data.get(c, "") for c in TAX_COLUMNS})
+    errors = tax.validate_tax_profile(normalized)
+    if errors:
+        raise RuleError("\n".join(errors))
+    data.update(normalized)
+
     if customer_id:
         conn.execute(
-            "UPDATE customers SET name=?, address=?, phone=?, opening_balance=?, notes=? "
-            "WHERE id=?",
+            f"UPDATE customers SET name=?, address=?, phone=?, opening_balance=?, "
+            f"notes=?, name_en=?, email=?, contact_person=?, credit_limit=?, "
+            f"payment_terms=?, {_tax_columns_sql(data)} WHERE id=?",
             (data["name"], data.get("address", ""), data.get("phone", ""),
-             _m(data.get("opening_balance", 0)), data.get("notes", ""), customer_id),
+             _m(data.get("opening_balance", 0)), data.get("notes", ""),
+             data.get("name_en", ""), data.get("email", ""),
+             data.get("contact_person", ""), data.get("credit_limit", 0),
+             data.get("payment_terms", 0),
+             *_tax_values(data), customer_id),
         )
         conn.commit()
         return customer_id
     cur = conn.execute(
-        "INSERT INTO customers(name, address, phone, opening_balance, notes) "
-        "VALUES(?,?,?,?,?)",
+        f"INSERT INTO customers(name, address, phone, opening_balance, notes, "
+        f"name_en, email, contact_person, credit_limit, payment_terms, "
+        f"{', '.join(TAX_COLUMNS)}) VALUES(?,?,?,?,?,?,?,?,?,?{',?' * len(TAX_COLUMNS)})",
         (data["name"], data.get("address", ""), data.get("phone", ""),
-         _m(data.get("opening_balance", 0)), data.get("notes", "")),
+         _m(data.get("opening_balance", 0)), data.get("notes", ""),
+         data.get("name_en", ""), data.get("email", ""),
+         data.get("contact_person", ""), data.get("credit_limit", 0),
+         data.get("payment_terms", 0),
+         *_tax_values(data)),
     )
     cid = int(cur.lastrowid)
     _stamp_code(conn, "customers", cid, "CUST")
@@ -221,10 +414,12 @@ def delete_customer(conn, customer_id: int) -> None:
     n_inv = _count(conn, "SELECT COUNT(*) FROM invoices WHERE customer_id=?", (customer_id,))
     n_rec = _count(
         conn, "SELECT COUNT(*) FROM receipt_vouchers WHERE customer_id=?", (customer_id,))
-    if n_inv or n_rec:
+    n_note = _count(
+        conn, "SELECT COUNT(*) FROM credit_debit_notes WHERE customer_id=?", (customer_id,))
+    if n_inv or n_rec or n_note:
         raise RuleError(
             "لا يمكن حذف العميل لوجود حركات مرتبطة به "
-            f"({n_inv} فاتورة، {n_rec} سند قبض)."
+            f"({n_inv} فاتورة، {n_rec} سند قبض، {n_note} إشعار)."
         )
     conn.execute("DELETE FROM customers WHERE id=?", (customer_id,))
     conn.commit()
@@ -248,10 +443,14 @@ def get_employee(conn, employee_id: int) -> sqlite3.Row | None:
 def save_employee(conn, data: dict, employee_id: int | None = None) -> int:
     ensure_not_blank(data.get("name", ""), "اسم الموظف")
     for k, label in (("name", "الاسم"), ("nationality", "الجنسية"),
-                     ("phone", "الهاتف"), ("notes", "الملاحظات")):
+                     ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للموظف، وليس قيمة تجريبية أو وهمية.")
+    data["phone"] = safe_phone(data.get("phone", ""))
     if data.get("emp_type") not in ("driver", "admin"):
         raise RuleError("اختر نوع الموظف (سائق / إداري).")
+    base_salary = _bounded(data.get("base_salary", 0), "الراتب الأساسي", 0, 1_000_000_000)
     if employee_id:
         old = get_employee(conn, employee_id)
         if old and old["emp_type"] != data["emp_type"]:
@@ -267,17 +466,17 @@ def save_employee(conn, data: dict, employee_id: int | None = None) -> int:
                 raise RuleError("لا يمكن تغيير نوع الموظف لوجود حركات/سيارات مرتبطة به "
                                 f"({linked} ارتباطاً).")
     vals = (data["name"], data.get("nationality", ""), data.get("phone", ""),
-            data["emp_type"], data.get("notes", ""))
+            data["emp_type"], base_salary, data.get("notes", ""))
     if employee_id:
         conn.execute(
-            "UPDATE employees SET name=?, nationality=?, phone=?, emp_type=?, notes=? "
-            "WHERE id=?", (*vals, employee_id),
+            "UPDATE employees SET name=?, nationality=?, phone=?, emp_type=?, "
+            "base_salary=?, notes=? WHERE id=?", (*vals, employee_id),
         )
         conn.commit()
         return employee_id
     cur = conn.execute(
-        "INSERT INTO employees(name, nationality, phone, emp_type, notes) "
-        "VALUES(?,?,?,?,?)", vals,
+        "INSERT INTO employees(name, nationality, phone, emp_type, base_salary, notes) "
+        "VALUES(?,?,?,?,?,?)", vals,
     )
     eid = int(cur.lastrowid)
     _stamp_code(conn, "employees", eid, "EMP")
@@ -320,6 +519,10 @@ def save_vehicle(conn, data: dict, vehicle_id: int | None = None) -> int:
     for k, label in (("plate_number", "رقم اللوحة"), ("vehicle_type", "النوع"),
                      ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    plate = data["plate_number"]
+    if (not re.search(r"[A-Za-z\u0600-\u06FF0-9]", plate)
+            or re.fullmatch(r"(.)\1{3,}", plate.replace(" ", ""))):
+        raise RuleError("رقم اللوحة غير صالح أو وهمي.")
     drv = data.get("default_driver_id") or None
     if drv is not None:
         emp = get_employee(conn, drv)
@@ -361,12 +564,6 @@ def delete_vehicle(conn, vehicle_id: int) -> None:
 # ---------------------------------------------------------------------------
 # الخزائن والبنوك
 # ---------------------------------------------------------------------------
-def list_accounts(conn, kind: str) -> list[sqlite3.Row]:
-    return conn.execute(
-        f"SELECT * FROM {calc.account_table(kind)} ORDER BY code"
-    ).fetchall()
-
-
 def get_account(conn, kind: str, account_id: int) -> sqlite3.Row | None:
     return conn.execute(
         f"SELECT * FROM {calc.account_table(kind)} WHERE id=?", (account_id,)
@@ -377,9 +574,12 @@ def save_account(conn, kind: str, data: dict, account_id: int | None = None) -> 
     tbl = calc.account_table(kind)
     prefix = "CB" if kind == "cashbox" else "BNK"
     ensure_not_blank(data.get("name", ""), "اسم " + calc.account_kind_label(kind))
-    for k, label in (("name", "الاسم"), ("account_number", "رقم الحساب"),
-                     ("iban", "الآيبان"), ("notes", "الملاحظات")):
+    for k, label in (("name", "الاسم"), ("notes", "الملاحظات")):
         data[k] = _txt(data.get(k, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("اسم الحساب غير صحيح أو وهمي.")
+    data["account_number"] = safe_account_number(data.get("account_number", ""))
+    data["iban"] = safe_iban(data.get("iban", ""))
     if kind == "bank":
         if account_id:
             conn.execute(
@@ -450,116 +650,225 @@ def list_invoices_raw(conn) -> list[sqlite3.Row]:
 
 
 def save_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
-    """حفظ الفاتورة مع نقلاتها ومصروفاتها (استبدال كامل للتفاصيل عند التعديل)."""
-    date = data["date"]
+    """إصدار فاتورة نقل (رأس + نقلات + مصروفات + سندات تلقائية).
+
+    مطابق لمنطق saveInvoice في نسخة الويب:
+      • الفاتورة **لا تُعدَّل ولا تُحذف بعد الإصدار** — التصحيح بإشعار دائن/مدين.
+      • لكل نقلة: عدد النقلات × سعر الوحدة + أرقام حاويات (بحد أقصى = العدد).
+      • لكل مصروف: كمية × قيمة وحدة + مصدر تمويل (نقداً/عهدة سائق/آجل مورد/على العميل).
+      • المصروف النقدي يُنشئ سند دفع تلقائي فوراً ويُخصم من الخزينة/البنك.
+    """
+    if invoice_id:
+        raise RuleError(
+            "الفاتورة الضريبية لا تقبل التعديل بعد إصدارها.\n"
+            "أنشئ إشعاراً دائناً (مرتجع/خصم) أو إشعاراً مديناً (إضافة) للتصحيح."
+        )
+    date = data.get("date", "")
     ensure_not_blank(date, "تاريخ الفاتورة")
-    if not data.get("customer_id"):
-        raise RuleError("اختر العميل.")
+    customer_id = _positive_id(data.get("customer_id"), "العميل")
+    if get_customer(conn, customer_id) is None:
+        raise RuleError("العميل المحدد غير موجود.")
     trips = data.get("trips") or []
     if not trips:
         raise RuleError("أضف نقلة واحدة على الأقل للفاتورة.")
-    data["notes"] = _txt(data.get("notes", ""), "ملاحظات الفاتورة")
-    for t in trips:
-        t["from_loc"] = _txt(t.get("from_loc", ""), "مكان الانطلاق")
-        t["to_loc"] = _txt(t.get("to_loc", ""), "مكان الوصول")
-        t["notes"] = _txt(t.get("notes", ""), "ملاحظات النقلة")
-        for e in t.get("expenses", []):
-            e["notes"] = _txt(e.get("notes", ""), "بيان المصروف")
-    for t in trips:
-        if _m(t.get("price", 0)) <= 0:
+    if len(trips) > 1000:
+        raise RuleError("عدد بنود النقل في الفاتورة أكبر من الحد المسموح.")
+    notes = _txt(data.get("notes", ""), "ملاحظات الفاتورة")
+    container_number = _txt(data.get("container_number", ""), "رقم الحاوية", 100)
+    raw_attachments = [a for a in (data.get("attachments") or []) if str(a).strip()]
+    if len(raw_attachments) > 10:
+        raise RuleError("الحد الأقصى للمرفقات هو 10 ملفات.")
+    attachments = [_txt(a, "اسم المرفق", 180) for a in raw_attachments]
+    vat_rate = (current_vat_rate(conn) if data.get("vat_rate") in (None, "")
+                else _bounded(data["vat_rate"], "نسبة الضريبة", 0, 100))
+
+    seen_containers: set[str] = set()
+    for index, t in enumerate(trips, start=1):
+        t["from_loc"] = _txt(t.get("from_loc", ""), "مكان الانطلاق", 200)
+        t["to_loc"] = _txt(t.get("to_loc", ""), "مكان الوصول", 200)
+        ensure_not_blank(t["from_loc"], "مكان الانطلاق")
+        ensure_not_blank(t["to_loc"], "مكان الوصول")
+        t["notes"] = _txt(t.get("notes", ""), "ملاحظات النقلة", 2000)
+        t["vehicle_id"] = (t.get("vehicle_id") or None)
+        t["driver_id"] = (t.get("driver_id") or None)
+        qty = _bounded(t.get("qty", 1), f"عدد النقلات في السطر {index}", 1, 1_000_000, True)
+        t["qty"] = qty
+        raw_containers = t.get("container_numbers") or []
+        if not isinstance(raw_containers, list):
+            raise RuleError(f"أرقام حاويات النقلة {index} غير صالحة.")
+        if len(raw_containers) > qty:
+            raise RuleError(
+                f"عدد أرقام الحاويات في النقلة {index} لا يجوز أن يتجاوز "
+                f"عدد النقلات ({qty}).")
+        cleaned: list[str] = []
+        for ci, value in enumerate(raw_containers, start=1):
+            container = _txt(value, f"رقم الحاوية {ci} في النقلة {index}", 100).strip()
+            ensure_not_blank(container, f"رقم الحاوية {ci} في النقلة {index}")
+            key = container.upper()
+            if key in seen_containers:
+                raise RuleError(f"رقم الحاوية «{container}» مكرر داخل الفاتورة.")
+            seen_containers.add(key)
+            cleaned.append(container)
+        t["container_numbers"] = cleaned
+        unit_price = _round_money(t.get("unit_price")
+                                  or (_m(t.get("price", 0)) / qty if qty else 0))
+        t["unit_price"] = unit_price
+        t["price"] = tax.round2(qty * unit_price)
+        if t["price"] <= 0:
             raise RuleError("سعر النقلة يجب أن يكون أكبر من صفر.")
-        for e in t.get("expenses", []):
-            if _m(e.get("amount", 0)) <= 0:
-                raise RuleError("مبلغ مصروف النقلة يجب أن يكون أكبر من صفر.")
 
-    if invoice_id:
-        old = conn.execute("SELECT date FROM invoices WHERE id=?", (invoice_id,)).fetchone()
-        if not old:
-            raise RuleError("الفاتورة غير موجودة.")
-        ensure_movement_editable(conn, old["date"], date)
-        conn.execute(
-            "UPDATE invoices SET date=?, customer_id=?, notes=?, attachments=? WHERE id=?",
-            (date, data["customer_id"], data.get("notes", ""),
-             json.dumps(data.get("attachments", []), ensure_ascii=False), invoice_id),
-        )
-    else:
-        ensure_date_in_open_year(conn, date)
-        number = _next_number(conn, "invoices")
-        cur = conn.execute(
-            "INSERT INTO invoices(number, date, customer_id, notes, attachments) "
-            "VALUES(?,?,?,?,?)",
-            (number, date, data["customer_id"], data.get("notes", ""),
-             json.dumps(data.get("attachments", []), ensure_ascii=False)),
-        )
-        invoice_id = int(cur.lastrowid)
-
-    # استبدال التفاصيل: حذف النقلات المحذوفة (بعد التأكد من عدم ارتباطها بسندات دفع)
-    kept_trip_ids = {int(t["id"]) for t in trips if t.get("id")}
-    for row in conn.execute(
-        "SELECT id FROM invoice_trips WHERE invoice_id=?", (invoice_id,)
-    ).fetchall():
-        if row["id"] not in kept_trip_ids:
-            linked = _count(
-                conn, "SELECT COUNT(*) FROM payment_vouchers WHERE voucher_type='trip' "
-                      "AND trip_id=?", (row["id"],))
-            if linked:
-                raise RuleError(
-                    "لا يمكن حذف نقلة مرتبطة بسندات دفع (مصروف يخص الرحلة).\n"
-                    "احذف السندات المرتبطة أولاً."
-                )
-            conn.execute("DELETE FROM invoice_trips WHERE id=?", (row["id"],))
-
-    for t in trips:
-        if t.get("id"):
-            conn.execute(
-                "UPDATE invoice_trips SET vehicle_id=?, driver_id=?, from_loc=?, to_loc=?, "
-                "price=?, notes=? WHERE id=?",
-                (t.get("vehicle_id") or None, t.get("driver_id") or None,
-                 t.get("from_loc", ""), t.get("to_loc", ""),
-                 _m(t.get("price", 0)), t.get("notes", ""), t["id"]),
-            )
-            trip_id = int(t["id"])
-            conn.execute("DELETE FROM trip_expenses WHERE trip_id=?", (trip_id,))
-        else:
-            cur = conn.execute(
-                "INSERT INTO invoice_trips(invoice_id, vehicle_id, driver_id, from_loc, "
-                "to_loc, price, notes) VALUES(?,?,?,?,?,?,?)",
-                (invoice_id, t.get("vehicle_id") or None, t.get("driver_id") or None,
-                 t.get("from_loc", ""), t.get("to_loc", ""),
-                 _m(t.get("price", 0)), t.get("notes", "")),
-            )
-            trip_id = int(cur.lastrowid)
-        for e in t.get("expenses", []):
+        expenses = t.get("expenses") or []
+        if len(expenses) > 1000:
+            raise RuleError("عدد مصروفات النقلة أكبر من الحد المسموح.")
+        for e in expenses:
             if e.get("expense_type") not in ("trip", "fuel", "card", "other"):
                 raise RuleError("نوع مصروف النقلة غير صالح.")
-            conn.execute(
-                "INSERT INTO trip_expenses(trip_id, expense_type, amount, notes) "
-                "VALUES(?,?,?,?)",
-                (trip_id, e["expense_type"], _m(e.get("amount", 0)),
-                 e.get("notes", "")),
+            e["notes"] = _txt(e.get("notes", ""), "بيان المصروف", 2000)
+            e["supplier_name"] = _txt(e.get("supplier_name", ""), "اسم المورد", 160)
+            eq = _bounded(e.get("qty", 1), "كمية المصروف", 0.001, 1_000_000)
+            e["qty"] = eq
+            e["unit_amount"] = _round_money(
+                e.get("unit_amount") or (_m(e.get("amount", 0)) / eq if eq else 0))
+            e["amount"] = tax.round2(eq * e["unit_amount"])
+            if e["amount"] <= 0:
+                raise RuleError("مبلغ مصروف النقلة يجب أن يكون أكبر من صفر.")
+            src = e.get("source") or "cash"
+            if src not in ("cash", "driver", "supplier", "customer"):
+                raise RuleError("مصدر تمويل المصروف غير صالح.")
+            e["source"] = src
+            if src == "cash":
+                if e.get("account_kind") not in ("cashbox", "bank") or not e.get("account_id"):
+                    raise RuleError("اختر الخزينة أو البنك الذي صُرف منه المصروف النقدي.")
+                _ensure_account_exists(conn, e["account_kind"], e["account_id"])
+            else:
+                e["account_kind"] = None
+                e["account_id"] = None
+            if src == "driver" and not t.get("driver_id"):
+                raise RuleError("حدّد السائق في النقلة قبل تسجيل مصروف من عهدته.")
+
+    ensure_date_in_open_year(conn, date)
+
+    # منع الرصيد السالب: مجموع المصروفات النقدية لكل جهة صرف
+    needed: dict[tuple[str, int], float] = {}
+    for t in trips:
+        for e in t.get("expenses") or []:
+            if e.get("source") != "cash":
+                continue
+            key = (e["account_kind"], int(e["account_id"]))
+            needed[key] = tax.round2(needed.get(key, 0.0) + e["amount"])
+    for (kind, acc_id), amount in needed.items():
+        ensure_sufficient_funds(conn, kind, acc_id, amount)
+
+    number = _next_number(conn, "invoices")
+    cur = conn.execute(
+        "INSERT INTO invoices(number, date, customer_id, vat_rate, notes, attachments, "
+        "container_number) VALUES(?,?,?,?,?,?,?)",
+        (number, date, customer_id, vat_rate, notes,
+         json.dumps(attachments, ensure_ascii=False), container_number),
+    )
+    invoice_id = int(cur.lastrowid)
+    try:
+        for t in trips:
+            tcur = conn.execute(
+                "INSERT INTO invoice_trips(invoice_id, vehicle_id, driver_id, from_loc, "
+                "to_loc, qty, unit_price, price, container_numbers, notes) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (invoice_id, t.get("vehicle_id") or None, t.get("driver_id") or None,
+                 t["from_loc"], t["to_loc"], t["qty"], t["unit_price"], t["price"],
+                 json.dumps(t["container_numbers"], ensure_ascii=False), t["notes"]),
             )
+            trip_id = int(tcur.lastrowid)
+            for e in t.get("expenses") or []:
+                ecur = conn.execute(
+                    "INSERT INTO trip_expenses(trip_id, expense_type, qty, unit_amount, "
+                    "amount, source, account_kind, account_id, supplier_name, notes) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (trip_id, e["expense_type"], e["qty"], e["unit_amount"], e["amount"],
+                     e["source"], e.get("account_kind"), e.get("account_id"),
+                     e["supplier_name"], e["notes"]),
+                )
+                # سند دفع تلقائي للمصروف النقدي (يُستثنى من المصاريف اللاحقة)
+                if e["source"] == "cash":
+                    conn.execute(
+                        "INSERT INTO payment_vouchers(number, date, account_kind, "
+                        "account_id, voucher_type, trip_id, source_expense_id, quantity, "
+                        "unit_amount, amount, description) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (_next_number(conn, "payment_vouchers"), date,
+                         e["account_kind"], int(e["account_id"]), "trip", trip_id,
+                         int(ecur.lastrowid), e["qty"], e["unit_amount"], e["amount"],
+                         f"مصروف نقلة تلقائي — {e['notes'] or 'مصروف'}"),
+                    )
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     return invoice_id
 
 
 def delete_invoice(conn, invoice_id: int) -> None:
-    inv = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
-    if not inv:
-        return
-    ensure_movement_editable(conn, inv["date"])
-    linked = _count(
-        conn,
-        "SELECT COUNT(*) FROM payment_vouchers p JOIN invoice_trips t ON t.id=p.trip_id "
-        "WHERE t.invoice_id=? AND p.voucher_type='trip'",
-        (invoice_id,),
+    """لا تُحذف فاتورة ضريبية بعد إصدارها — التصحيح بالإشعارات."""
+    raise RuleError(
+        "لا يمكن حذف فاتورة ضريبية بعد إصدارها.\n"
+        "استخدم إشعاراً دائناً (مرتجع نقلة أو خصم) أو إشعاراً مديناً للتصحيح."
     )
-    if linked:
+
+
+def current_account_balance(conn, kind: str, account_id: int,
+                            exclude_payment_id: int | None = None,
+                            exclude_payroll_id: int | None = None,
+                            exclude_expense_ids: list[int] | None = None) -> float:
+    """الرصيد الحالي لجهة نقدية، مع إمكانية استثناء حركات قيد التعديل."""
+    tbl = calc.account_table(kind)
+    bal = _m(_scalar(conn, f"SELECT opening_balance FROM {tbl} WHERE id=?", (account_id,)))
+    bal += _scalar(
+        conn, "SELECT COALESCE(SUM(amount),0) FROM receipt_vouchers "
+              "WHERE account_kind=? AND account_id=?", (kind, account_id))
+    for row in conn.execute(
+        "SELECT id, amount, source_expense_id FROM payment_vouchers "
+        "WHERE account_kind=? AND account_id=?", (kind, account_id),
+    ):
+        if exclude_payment_id and row["id"] == exclude_payment_id:
+            continue
+        if (exclude_expense_ids and row["source_expense_id"] is not None
+                and row["source_expense_id"] in exclude_expense_ids):
+            continue
+        bal -= float(row["amount"] or 0)
+    for row in conn.execute(
+        "SELECT id, net_salary FROM payrolls WHERE account_kind=? AND account_id=?",
+        (kind, account_id),
+    ):
+        if exclude_payroll_id and row["id"] == exclude_payroll_id:
+            continue
+        bal -= float(row["net_salary"] or 0)
+    return tax.round2(bal)
+
+
+def ensure_sufficient_funds(conn, kind: str, account_id: int, outflow: float,
+                            exclude_payment_id: int | None = None,
+                            exclude_payroll_id: int | None = None,
+                            exclude_expense_ids: list[int] | None = None) -> None:
+    """يرفض أي حركة صرف تجعل رصيد الخزينة/البنك سالباً (مطابق لنسخة الويب)."""
+    amount = tax.round2(outflow)
+    if amount <= 0:
+        return
+    _ensure_account_exists(conn, kind, account_id)
+    balance = current_account_balance(
+        conn, kind, account_id, exclude_payment_id, exclude_payroll_id,
+        exclude_expense_ids)
+    if amount > balance + 0.0001:
+        from ..utils.fmt import money
+        label = "الخزينة" if kind == "cashbox" else "البنك"
         raise RuleError(
-            "لا يمكن حذف الفاتورة: توجد سندات دفع (مصروفات رحلات) مرتبطة بنقلاتها.\n"
-            "احذف السندات المرتبطة أولاً."
+            f"الرصيد لا يكفي: {label} «{calc.account_name(conn, kind, account_id)}» "
+            f"رصيده {money(balance)} والمطلوب صرفه {money(amount)}.\n"
+            "لا يُسمح بجعل الرصيد سالباً — سجّل إيداعاً أولاً أو اختر جهة صرف أخرى."
         )
-    conn.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
-    conn.commit()
+
+
+def _scalar(conn, sql: str, params=()) -> float:
+    r = conn.execute(sql, params).fetchone()
+    return float(r[0]) if r and r[0] is not None else 0.0
 
 
 def _ensure_account_exists(conn, kind: str, account_id) -> None:
@@ -677,9 +986,13 @@ def list_payments(conn, d_from=None, d_to=None, voucher_type=None) -> list[sqlit
     return conn.execute(sql, params).fetchall()
 
 
+PAYMENT_VOUCHER_TYPES = ("trip", "advance", "vehicle", "general",
+                         "supplier", "purchase", "owner")
+
+
 def _validate_payment(conn, data: dict) -> None:
     vt = data.get("voucher_type")
-    if vt not in ("trip", "advance", "vehicle", "general"):
+    if vt not in PAYMENT_VOUCHER_TYPES:
         raise RuleError("اختر نوع السند.")
     amount = _m(data.get("amount", 0))
     ensure_positive(amount)
@@ -693,6 +1006,8 @@ def _validate_payment(conn, data: dict) -> None:
         raise RuleError("اختر الموظف/السائق للسلفة.")
     if vt == "vehicle" and not data.get("vehicle_id"):
         raise RuleError("اختر السيارة لمصروف الصيانة.")
+    if vt == "supplier" and not data.get("supplier_id"):
+        raise RuleError("اختر المورّد المُسدَّد له.")
     if data.get("trip_id"):
         t = conn.execute("SELECT id FROM invoice_trips WHERE id=?",
                          (data["trip_id"],)).fetchone()
@@ -702,18 +1017,76 @@ def _validate_payment(conn, data: dict) -> None:
         raise RuleError("الموظف المحدد غير موجود.")
     if vt == "vehicle" and get_vehicle(conn, data["vehicle_id"]) is None:
         raise RuleError("السيارة المحددة غير موجودة.")
+    if vt == "supplier":
+        if get_supplier(conn, data["supplier_id"]) is None:
+            raise RuleError("المورّد المحدد غير موجود.")
+        if data.get("purchase_invoice_id"):
+            row = conn.execute(
+                "SELECT id, supplier_id FROM purchase_invoices WHERE id=?",
+                (data["purchase_invoice_id"],)).fetchone()
+            if not row:
+                raise RuleError("فاتورة المشتريات المحددة غير موجودة.")
+            if row["supplier_id"] != data["supplier_id"]:
+                raise RuleError("فاتورة المشتريات لا تخص المورّد المحدد.")
+
+
+def _payment_columns(data: dict) -> dict:
+    """تطبيع أعمدة السند: كل توجيه يملأ مرجعه فقط (كما في نسخة الويب)."""
+    vt = data["voucher_type"]
+    description = data.get("description", "")
+    if vt == "owner" and not str(description).strip():
+        description = "سحب نقدي لصاحب المنشأة"
+    return {
+        "date": data["date"],
+        "account_kind": data["account_kind"],
+        "account_id": data["account_id"],
+        "voucher_type": vt,
+        "trip_id": data.get("trip_id") if vt == "trip" else None,
+        "employee_id": data.get("employee_id") if vt == "advance" else None,
+        "vehicle_id": data.get("vehicle_id") if vt == "vehicle" else None,
+        "vehicle_expense": (_txt(data.get("vehicle_expense", ""), "نوع مصروف السيارة", 160)
+                            if vt == "vehicle" else ""),
+        "supplier_id": data.get("supplier_id") if vt == "supplier" else None,
+        "purchase_invoice_id": (data.get("purchase_invoice_id")
+                                if vt == "supplier" else None),
+        "quantity": data.get("quantity", 1),
+        "unit_amount": data.get("unit_amount", 0),
+        "amount": data.get("amount", 0),
+        "description": description,
+    }
 
 
 def save_payment(conn, data: dict, voucher_id: int | None = None) -> int:
-    date = data["date"]
+    """سند دفع بأحد التوجيهات السبعة، بكمية × قيمة وحدة، ومنع الرصيد السالب."""
+    date = data.get("date", "")
     ensure_not_blank(date, "تاريخ السند")
+    data["date"] = date
+
+    # توافق رجعي: الاستدعاءات التي ترسل amount فقط تُعامل كوحدة واحدة
+    quantity = _bounded(data.get("quantity", 1), "كمية المصروف", 0.001, 1_000_000)
+    fallback_amount = _round_money(data.get("amount", 0))
+    unit_amount = _round_money(data.get("unit_amount")
+                               or (fallback_amount / quantity if quantity else 0))
+    if unit_amount <= 0:
+        raise RuleError("قيمة وحدة المصروف يجب أن تكون أكبر من صفر.")
+    data.update({"quantity": quantity, "unit_amount": unit_amount,
+                 "amount": tax.round2(quantity * unit_amount)})
     _validate_payment(conn, data)
+    row = _payment_columns(data)
 
     if voucher_id:
         old = conn.execute("SELECT date, voucher_type, employee_id, amount "
                            "FROM payment_vouchers WHERE id=?", (voucher_id,)).fetchone()
         if not old:
             raise RuleError("السند غير موجود.")
+        # سند متولّد تلقائياً من فاتورة: يُعدَّل من الفاتورة نفسها لا هنا
+        auto = conn.execute(
+            "SELECT source_expense_id FROM payment_vouchers WHERE id=?",
+            (voucher_id,)).fetchone()
+        if auto and auto["source_expense_id"] is not None:
+            raise RuleError(
+                "هذا السند متولّد تلقائياً من مصروف نقدي داخل فاتورة نقل.\n"
+                "لا يُعدَّل منفرداً — راجعه من فاتورته.")
         # سلفة عليها تسويات في الرواتب: منع التعديل حفاظاً على الدقة المحاسبية
         if old["voucher_type"] == "advance":
             settled = _count(
@@ -725,42 +1098,47 @@ def save_payment(conn, data: dict, voucher_id: int | None = None) -> int:
                     "احذف الرواتب المرتبطة بها أولاً ثم عدّل السلفة."
                 )
         ensure_movement_editable(conn, old["date"], date)
+        ensure_sufficient_funds(conn, row["account_kind"], row["account_id"],
+                                row["amount"], exclude_payment_id=voucher_id)
         conn.execute(
             "UPDATE payment_vouchers SET date=?, account_kind=?, account_id=?, "
             "voucher_type=?, trip_id=?, employee_id=?, vehicle_id=?, vehicle_expense=?, "
+            "supplier_id=?, purchase_invoice_id=?, quantity=?, unit_amount=?, "
             "amount=?, description=? WHERE id=?",
-            (date, data["account_kind"], data["account_id"], data["voucher_type"],
-             data.get("trip_id") if data["voucher_type"] == "trip" else None,
-             data.get("employee_id") if data["voucher_type"] == "advance" else None,
-             data.get("vehicle_id") if data["voucher_type"] == "vehicle" else None,
-             data.get("vehicle_expense", "") if data["voucher_type"] == "vehicle" else "",
-             _m(data.get("amount", 0)), data.get("description", ""), voucher_id),
+            (row["date"], row["account_kind"], row["account_id"], row["voucher_type"],
+             row["trip_id"], row["employee_id"], row["vehicle_id"], row["vehicle_expense"],
+             row["supplier_id"], row["purchase_invoice_id"], row["quantity"],
+             row["unit_amount"], row["amount"], row["description"], voucher_id),
         )
         conn.commit()
         return voucher_id
 
     ensure_date_in_open_year(conn, date)
+    ensure_sufficient_funds(conn, row["account_kind"], row["account_id"], row["amount"])
     number = _next_number(conn, "payment_vouchers")
     cur = conn.execute(
         "INSERT INTO payment_vouchers(number, date, account_kind, account_id, voucher_type, "
-        "trip_id, employee_id, vehicle_id, vehicle_expense, amount, description) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (number, date, data["account_kind"], data["account_id"], data["voucher_type"],
-         data.get("trip_id") if data["voucher_type"] == "trip" else None,
-         data.get("employee_id") if data["voucher_type"] == "advance" else None,
-         data.get("vehicle_id") if data["voucher_type"] == "vehicle" else None,
-         data.get("vehicle_expense", "") if data["voucher_type"] == "vehicle" else "",
-         _m(data.get("amount", 0)), data.get("description", "")),
+        "trip_id, employee_id, vehicle_id, vehicle_expense, supplier_id, "
+        "purchase_invoice_id, quantity, unit_amount, amount, description) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (number, row["date"], row["account_kind"], row["account_id"], row["voucher_type"],
+         row["trip_id"], row["employee_id"], row["vehicle_id"], row["vehicle_expense"],
+         row["supplier_id"], row["purchase_invoice_id"], row["quantity"],
+         row["unit_amount"], row["amount"], row["description"]),
     )
     conn.commit()
     return int(cur.lastrowid)
 
 
 def delete_payment(conn, voucher_id: int) -> None:
-    v = conn.execute("SELECT date, voucher_type FROM payment_vouchers WHERE id=?",
-                     (voucher_id,)).fetchone()
+    v = conn.execute("SELECT date, voucher_type, source_expense_id "
+                     "FROM payment_vouchers WHERE id=?", (voucher_id,)).fetchone()
     if not v:
         return
+    if v["source_expense_id"] is not None:
+        raise RuleError(
+            "هذا السند متولّد تلقائياً من مصروف نقدي داخل فاتورة نقل.\n"
+            "لا يُحذف منفرداً — راجعه من فاتورته.")
     if v["voucher_type"] == "advance":
         settled = _count(
             conn, "SELECT COUNT(*) FROM advance_settlements WHERE payment_voucher_id=?",
@@ -831,51 +1209,90 @@ def get_payroll(conn, payroll_id: int) -> dict:
 
 
 def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
-    """إصدار/تعديل راتب مع تسويات السلف (استبدال كامل للتسويات)."""
-    date = data["date"]
+    """إصدار/تعديل راتب مع تسويات السلف **وتسويات بنود الخصومات**.
+
+    مطابق لـ savePayroll في نسخة الويب:
+      الصافي = الأساسي + الإضافات − خصم السلف − خصم الخصومات − خصومات أخرى.
+    """
+    date = data.get("date", "")
     ensure_not_blank(date, "تاريخ الصرف")
-    if not data.get("employee_id"):
-        raise RuleError("اختر الموظف/السائق.")
-    if get_employee(conn, data["employee_id"]) is None:
+    data["date"] = date
+    employee_id = _positive_id(data.get("employee_id"), "الموظف/السائق")
+    if get_employee(conn, employee_id) is None:
         raise RuleError("الموظف المحدد غير موجود.")
     if data.get("account_kind") not in ("cashbox", "bank") or not data.get("account_id"):
         raise RuleError("اختر جهة الصرف (خزينة أو بنك).")
-    _ensure_account_exists(conn, data["account_kind"], data["account_id"])
-    base = _m(data.get("base_salary", 0))
-    additions = _m(data.get("additions", 0))
-    other_ded = _m(data.get("other_deductions", 0))
+    account_id = _positive_id(data.get("account_id"), "جهة الصرف")
+    _ensure_account_exists(conn, data["account_kind"], account_id)
+    base = _round_money(data.get("base_salary", 0))
+    additions = _round_money(data.get("additions", 0))
+    other_ded = _round_money(data.get("other_deductions", 0))
     ensure_positive(base, "الراتب الأساسي")
-    try:
-        p_month = int(data["period_month"])
-        p_year = int(data["period_year"])
-    except (TypeError, ValueError, KeyError):
-        raise RuleError("شهر/سنة الراتب غير صالحة.")
-    if not (1 <= p_month <= 12):
-        raise RuleError("شهر الراتب يجب أن يكون بين 1 و 12.")
-    if not (1900 <= p_year <= 2200):
-        raise RuleError("سنة الراتب غير منطقية.")
+    p_month = _bounded(data.get("period_month"), "شهر الراتب", 1, 12, True)
+    p_year = _bounded(data.get("period_year"), "سنة الراتب", 1900, 2200, True)
     if additions < 0 or other_ded < 0:
         raise RuleError("لا يمكن إدخال قيم سالبة في الإضافات أو الخصومات.")
 
-    settlements = [(v, _m(a)) for v, a in (data.get("settlements") or [])]
-    total_settled = round(sum(a for _, a in settlements), 2)
+    # ---- تسويات السلف (كلي/جزئي) ----
+    raw_settlements = data.get("settlements") or []
+    if not isinstance(raw_settlements, (list, tuple)):
+        raise RuleError("قائمة تسويات السلف غير صالحة.")
+    if len(raw_settlements) > 1000:
+        raise RuleError("عدد تسويات السلف أكبر من الحد المسموح.")
+    settlements = []
+    for item in raw_settlements:
+        if isinstance(item, (list, tuple)):
+            settlements.append((_positive_id(item[0], "معرّف السلفة"),
+                                _round_money(item[1])))
+        else:
+            settlements.append((_positive_id(item.get("payment_voucher_id"), "معرّف السلفة"),
+                                _round_money(item.get("amount"))))
+    total_settled = tax.round2(sum(a for _, a in settlements))
     adv_ded = data.get("advance_deduction")
-    adv_ded = _m(total_settled if adv_ded is None else adv_ded)
+    adv_ded = _round_money(total_settled if adv_ded is None else adv_ded)
     if adv_ded < 0:
         raise RuleError("لا يمكن إدخال قيم سالبة في الإضافات أو الخصومات.")
     if abs(total_settled - adv_ded) > 0.01:
         raise RuleError("مجموع خصومات السلف الموزعة لا يطابق قيمة الخصم من السلف.")
 
-    # التحقق من عدم تجاوز المتبقي من كل سلفة
+    # ---- تسويات بنود الخصومات (نفس المنطق على employee_deductions) ----
+    raw_ded_settlements = data.get("deduction_settlements") or []
+    if not isinstance(raw_ded_settlements, (list, tuple)):
+        raise RuleError("قائمة تسويات الخصومات غير صالحة.")
+    if len(raw_ded_settlements) > 1000:
+        raise RuleError("عدد تسويات الخصومات أكبر من الحد المسموح.")
+    deduction_settlements = []
+    for item in raw_ded_settlements:
+        if isinstance(item, (list, tuple)):
+            deduction_settlements.append(
+                (_positive_id(item[0], "معرّف بند الخصم"), _round_money(item[1])))
+        else:
+            deduction_settlements.append((
+                _positive_id(item.get("employee_deduction_id"), "معرّف بند الخصم"),
+                _round_money(item.get("amount"))))
+    ded_settled = tax.round2(sum(a for _, a in deduction_settlements))
+    ded_ded = data.get("deduction_deduction")
+    ded_ded = _round_money(ded_settled if ded_ded is None else ded_ded)
+    if abs(ded_settled - ded_ded) > 0.01:
+        raise RuleError("مجموع خصومات الخصومات الموزعة لا يطابق إجمالي خصم الخصومات.")
+
     rem_map = {a["id"]: a["remaining"]
-               for a in employee_advances(conn, data["employee_id"])}
+               for a in employee_advances(conn, employee_id)}
+    ded_rem_map = {d["id"]: d["remaining"]
+                   for d in calc.employee_deductions(conn, employee_id)}
     if payroll_id:  # عند التعديل: استثناء تسويات هذا الراتب نفسه من المتبقي
         for s in conn.execute(
             "SELECT payment_voucher_id, amount FROM advance_settlements WHERE payroll_id=?",
             (payroll_id,),
         ).fetchall():
-            rem_map[s["payment_voucher_id"]] = (
+            rem_map[s["payment_voucher_id"]] = tax.round2(
                 rem_map.get(s["payment_voucher_id"], 0) + s["amount"])
+        for s in conn.execute(
+            "SELECT employee_deduction_id, amount FROM deduction_settlements "
+            "WHERE payroll_id=?", (payroll_id,),
+        ).fetchall():
+            ded_rem_map[s["employee_deduction_id"]] = tax.round2(
+                ded_rem_map.get(s["employee_deduction_id"], 0) + s["amount"])
 
     for vid, amount in settlements:
         if amount <= 0:
@@ -884,35 +1301,49 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
             raise RuleError("سلفة غير موجودة أو لا تخص هذا الموظف.")
         if amount > rem_map[vid] + 0.01:
             raise RuleError("قيمة الخصم من إحدى السلف أكبر من المتبقي منها.")
+    for did, amount in deduction_settlements:
+        if amount <= 0:
+            continue
+        if did not in ded_rem_map:
+            raise RuleError("بند خصم غير موجود أو لا يخص هذا الموظف.")
+        if amount > ded_rem_map[did] + 0.01:
+            raise RuleError("قيمة الخصم من أحد بنود الخصومات أكبر من المتبقي منه.")
 
-    net = round(base + additions - adv_ded - other_ded, 2)
+    net = tax.round2(base + additions - adv_ded - ded_ded - other_ded)
     if net < 0:
         raise RuleError("صافي الراتب سالب: راجع الإضافات والخصومات.")
 
-    vals = (date, data["employee_id"], p_year, p_month,
-            data["account_kind"], data["account_id"], base, additions,
-            data.get("additions_note", ""), adv_ded, other_ded, net,
-            data.get("notes", ""))
     if payroll_id:
         old = conn.execute("SELECT date FROM payrolls WHERE id=?", (payroll_id,)).fetchone()
         if not old:
             raise RuleError("الراتب غير موجود.")
         ensure_movement_editable(conn, old["date"], date)
+    else:
+        ensure_date_in_open_year(conn, date)
+    ensure_sufficient_funds(conn, data["account_kind"], account_id, net,
+                            exclude_payroll_id=payroll_id)
+
+    vals = (date, employee_id, p_year, p_month,
+            data["account_kind"], account_id, base, additions,
+            _txt(data.get("additions_note", ""), "بيان الإضافات"),
+            adv_ded, other_ded, ded_ded, net, _txt(data.get("notes", ""), "الملاحظات"))
+    if payroll_id:
         conn.execute(
             "UPDATE payrolls SET date=?, employee_id=?, period_year=?, period_month=?, "
             "account_kind=?, account_id=?, base_salary=?, additions=?, additions_note=?, "
-            "advance_deduction=?, other_deductions=?, net_salary=?, notes=? WHERE id=?",
+            "advance_deduction=?, other_deductions=?, deduction_deduction=?, "
+            "net_salary=?, notes=? WHERE id=?",
             (*vals, payroll_id),
         )
         conn.execute("DELETE FROM advance_settlements WHERE payroll_id=?", (payroll_id,))
+        conn.execute("DELETE FROM deduction_settlements WHERE payroll_id=?", (payroll_id,))
     else:
-        ensure_date_in_open_year(conn, date)
         number = _next_number(conn, "payrolls")
         cur = conn.execute(
             "INSERT INTO payrolls(number, date, employee_id, period_year, period_month, "
             "account_kind, account_id, base_salary, additions, additions_note, "
-            "advance_deduction, other_deductions, net_salary, notes) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "advance_deduction, other_deductions, deduction_deduction, net_salary, notes) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (number, *vals),
         )
         payroll_id = int(cur.lastrowid)
@@ -921,6 +1352,12 @@ def save_payroll(conn, data: dict, payroll_id: int | None = None) -> int:
             conn.execute(
                 "INSERT INTO advance_settlements(payment_voucher_id, payroll_id, amount) "
                 "VALUES(?,?,?)", (vid, payroll_id, amount),
+            )
+    for did, amount in deduction_settlements:
+        if amount > 0:
+            conn.execute(
+                "INSERT INTO deduction_settlements(employee_deduction_id, payroll_id, "
+                "amount) VALUES(?,?,?)", (did, payroll_id, amount),
             )
     conn.commit()
     return payroll_id
@@ -936,17 +1373,599 @@ def delete_payroll(conn, payroll_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# الموردون
+# ---------------------------------------------------------------------------
+SUPPLIER_TEXT_FIELDS = (
+    ("name", "اسم المورّد"), ("name_en", "الاسم بالإنجليزية"), ("phone", "الهاتف"),
+    ("email", "البريد الإلكتروني"), ("contact_person", "الشخص المسؤول"),
+    ("address", "العنوان"), ("notes", "الملاحظات"),
+)
+
+
+def list_suppliers(conn) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM suppliers ORDER BY code").fetchall()
+
+
+def get_supplier(conn, supplier_id) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+
+
+def save_supplier(conn, data: dict, supplier_id: int | None = None) -> int:
+    """حفظ مورّد مع الحزمة الضريبية والعنوان الوطني (مطابق لنسخة الويب)."""
+    ensure_not_blank(data.get("name", ""), "اسم المورّد")
+    for key, label in SUPPLIER_TEXT_FIELDS:
+        data[key] = _txt(data.get(key, ""), label)
+    if not is_plausible_identity_text(data["name"]):
+        raise RuleError("أدخل اسماً حقيقياً للمورّد، وليس قيمة تجريبية أو وهمية.")
+    if data["address"] and not is_plausible_identity_text(data["address"]):
+        raise RuleError("عنوان المورّد غير صحيح أو وهمي.")
+    if data["contact_person"] and not is_plausible_identity_text(data["contact_person"]):
+        raise RuleError("اسم مسؤول التواصل غير صحيح أو وهمي.")
+    data["phone"] = safe_phone(data.get("phone", ""))
+    data["email"] = safe_email(data.get("email", ""))
+    _ensure_unique_contact(conn, "suppliers", data["phone"], data["email"],
+                           supplier_id, "مورّد")
+    normalized = tax.normalize_tax_profile({c: data.get(c, "") for c in TAX_COLUMNS})
+    errors = tax.validate_tax_profile(normalized)
+    if errors:
+        raise RuleError("\n".join(errors))
+    data.update(normalized)
+    payment_terms = _bounded(data.get("payment_terms", 0), "مدة السداد بالأيام",
+                             0, 3650, True)
+
+    if supplier_id:
+        conn.execute(
+            f"UPDATE suppliers SET name=?, name_en=?, phone=?, email=?, contact_person=?, "
+            f"address=?, opening_balance=?, notes=?, payment_terms=?, "
+            f"{_tax_columns_sql(data)} WHERE id=?",
+            (data["name"], data["name_en"], data["phone"], data["email"],
+             data["contact_person"], data["address"],
+             _m(data.get("opening_balance", 0)), data["notes"], payment_terms,
+             *_tax_values(data), supplier_id),
+        )
+        conn.commit()
+        return supplier_id
+    cur = conn.execute(
+        f"INSERT INTO suppliers(name, name_en, phone, email, contact_person, address, "
+        f"opening_balance, notes, payment_terms, {', '.join(TAX_COLUMNS)}) "
+        f"VALUES(?,?,?,?,?,?,?,?,?{',?' * len(TAX_COLUMNS)})",
+        (data["name"], data["name_en"], data["phone"], data["email"],
+         data["contact_person"], data["address"], _m(data.get("opening_balance", 0)),
+         data["notes"], payment_terms, *_tax_values(data)),
+    )
+    sid = int(cur.lastrowid)
+    _stamp_code(conn, "suppliers", sid, "SUP")
+    conn.commit()
+    return sid
+
+
+def delete_supplier(conn, supplier_id: int) -> None:
+    n_inv = _count(conn, "SELECT COUNT(*) FROM purchase_invoices WHERE supplier_id=?",
+                   (supplier_id,))
+    n_pay = _count(conn, "SELECT COUNT(*) FROM payment_vouchers WHERE supplier_id=?",
+                   (supplier_id,))
+    if n_inv or n_pay:
+        raise RuleError(
+            "لا يمكن حذف المورّد لوجود حركات مرتبطة به "
+            f"({n_inv} فاتورة مشتريات، {n_pay} سند دفع)."
+        )
+    conn.execute("DELETE FROM suppliers WHERE id=?", (supplier_id,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# فواتير المشتريات (نقدية تُدفع فوراً / آجلة تُرحَّل على المورّد)
+# ---------------------------------------------------------------------------
+def list_purchase_invoices(conn, d_from=None, d_to=None, supplier_id=None) -> list[dict]:
+    sql = ("SELECT p.*, s.name AS supplier_name, s.code AS supplier_code, "
+           "v.plate_number FROM purchase_invoices p "
+           "LEFT JOIN suppliers s ON s.id=p.supplier_id "
+           "LEFT JOIN vehicles v ON v.id=p.vehicle_id WHERE 1=1")
+    params: list = []
+    if d_from:
+        sql += " AND p.date >= ?"
+        params.append(d_from)
+    if d_to:
+        sql += " AND p.date <= ?"
+        params.append(d_to)
+    if supplier_id:
+        sql += " AND p.supplier_id=?"
+        params.append(supplier_id)
+    sql += " ORDER BY p.date DESC, p.number DESC"
+    out = []
+    for r in conn.execute(sql, params).fetchall():
+        d = dict(r)
+        d.update(calc.purchase_invoice_totals(conn, d["id"]))
+        d.pop("items", None)  # البنود تُجلب عند فتح الفاتورة فقط
+        d["account_name"] = (calc.account_name(conn, d["account_kind"], d["account_id"])
+                             if d["account_kind"] else "—")
+        out.append(d)
+    return out
+
+
+def get_purchase_invoice(conn, invoice_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM purchase_invoices WHERE id=?",
+                       (invoice_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["items"] = calc.purchase_items(conn, invoice_id)
+    d.update(calc.purchase_totals(d["items"], bool(d["vat_included"])))
+    return d
+
+
+def save_purchase_invoice(conn, data: dict, invoice_id: int | None = None) -> int:
+    """فاتورة مشتريات: رأس + بنود + (سند دفع تلقائي إن كانت نقدية).
+
+    المصروف يُثبت في الأرباح والخسائر عند تاريخ الفاتورة سواء كانت نقدية أو آجلة.
+    """
+    from ..utils.fmt import PURCHASE_EXPENSE_CATEGORIES
+    date = data.get("date", "")
+    ensure_not_blank(date, "تاريخ فاتورة المشتريات")
+    purchase_type = data.get("purchase_type")
+    if purchase_type not in ("credit", "cash"):
+        raise RuleError("اختر نوع فاتورة المشتريات (آجلة / نقدية).")
+    category = data.get("expense_category") or "other"
+    if category not in PURCHASE_EXPENSE_CATEGORIES:
+        raise RuleError("اختر بند المصروف في الأرباح والخسائر.")
+    supplier_id = (_positive_id(data.get("supplier_id"), "المورّد")
+                   if purchase_type == "credit" else None)
+    if supplier_id and get_supplier(conn, supplier_id) is None:
+        raise RuleError("المورّد المحدد غير موجود.")
+    vehicle_id = (_positive_id(data.get("vehicle_id"), "السيارة")
+                  if data.get("vehicle_id") else None)
+    if vehicle_id and get_vehicle(conn, vehicle_id) is None:
+        raise RuleError("السيارة المحددة غير موجودة.")
+    account_kind = account_id = None
+    if purchase_type == "cash":
+        if data.get("account_kind") not in ("cashbox", "bank"):
+            raise RuleError("اختر الخزينة أو البنك للدفع المباشر.")
+        account_kind = data["account_kind"]
+        account_id = _positive_id(data.get("account_id"), "جهة الدفع")
+        _ensure_account_exists(conn, account_kind, account_id)
+
+    raw_items = data.get("items") or []
+    if not raw_items:
+        raise RuleError("أضف بنداً واحداً على الأقل للفاتورة.")
+    if len(raw_items) > 1000:
+        raise RuleError("عدد بنود فاتورة المشتريات أكبر من الحد المسموح.")
+    vat_rate = _bounded(data.get("vat_rate", 15), "نسبة الضريبة", 0, 100)
+    vat_included = bool(data.get("vat_included"))
+    items = []
+    for it in raw_items:
+        name = _txt(it.get("item_name", ""), "اسم الصنف", 160)
+        ensure_not_blank(name, "اسم الصنف")
+        qty = _bounded(it.get("qty", 1), "الكمية", 0.001, 1_000_000)
+        unit_price = _round_money(it.get("unit_price", 0))
+        if unit_price < 0:
+            raise RuleError("سعر الوحدة لا يمكن أن يكون سالباً.")
+        items.append({
+            "item_name": name,
+            "unit": _txt(it.get("unit", ""), "الوحدة", 30),
+            "qty": qty,
+            "unit_price": unit_price,
+            "vat_rate": _bounded(it.get("vat_rate", vat_rate), "نسبة ضريبة البند", 0, 100),
+            "notes": _txt(it.get("notes", ""), "ملاحظات البند", 500),
+        })
+    totals = calc.purchase_totals(items, vat_included)
+    if totals["total"] <= 0:
+        raise RuleError("إجمالي فاتورة المشتريات يجب أن يكون أكبر من صفر.")
+
+    if invoice_id:
+        old = conn.execute("SELECT date FROM purchase_invoices WHERE id=?",
+                           (invoice_id,)).fetchone()
+        if not old:
+            raise RuleError("فاتورة المشتريات غير موجودة.")
+        ensure_movement_editable(conn, old["date"], date)
+        old_voucher = conn.execute(
+            "SELECT id FROM payment_vouchers WHERE purchase_invoice_id=?",
+            (invoice_id,)).fetchone()
+        if old_voucher:
+            conn.execute("DELETE FROM payment_vouchers WHERE id=?",
+                         (old_voucher["id"],))
+    else:
+        ensure_date_in_open_year(conn, date)
+
+    if purchase_type == "cash":
+        ensure_sufficient_funds(conn, account_kind, account_id, totals["total"],
+                                exclude_payment_id=(
+                                    conn.execute(
+                                        "SELECT id FROM payment_vouchers "
+                                        "WHERE purchase_invoice_id=?",
+                                        (invoice_id,)).fetchone() or {"id": None})["id"]
+                                if invoice_id else None)
+
+    vals = (date, purchase_type, supplier_id,
+            _txt(data.get("supplier_ref", ""), "مرجع المورّد", 80), category,
+            vehicle_id, account_kind, account_id, vat_rate, int(vat_included),
+            _txt(data.get("notes", ""), "ملاحظات فاتورة المشتريات", 1000))
+    try:
+        if invoice_id:
+            conn.execute(
+                "UPDATE purchase_invoices SET date=?, purchase_type=?, supplier_id=?, "
+                "supplier_ref=?, expense_category=?, vehicle_id=?, account_kind=?, "
+                "account_id=?, vat_rate=?, vat_included=?, notes=? WHERE id=?",
+                (*vals, invoice_id),
+            )
+            conn.execute("DELETE FROM purchase_items WHERE invoice_id=?", (invoice_id,))
+        else:
+            number = _next_number(conn, "purchase_invoices")
+            cur = conn.execute(
+                "INSERT INTO purchase_invoices(number, date, purchase_type, supplier_id, "
+                "supplier_ref, expense_category, vehicle_id, account_kind, account_id, "
+                "vat_rate, vat_included, notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (number, *vals),
+            )
+            invoice_id = int(cur.lastrowid)
+        for it in items:
+            conn.execute(
+                "INSERT INTO purchase_items(invoice_id, item_name, unit, qty, unit_price, "
+                "vat_rate, notes) VALUES(?,?,?,?,?,?,?)",
+                (invoice_id, it["item_name"], it["unit"], it["qty"], it["unit_price"],
+                 it["vat_rate"], it["notes"]),
+            )
+        # الشراء النقدي: سند دفع تلقائي (نوع purchase) لا يُحتسب مرتين في الأرباح
+        if purchase_type == "cash":
+            conn.execute(
+                "INSERT INTO payment_vouchers(number, date, account_kind, account_id, "
+                "voucher_type, purchase_invoice_id, quantity, unit_amount, amount, "
+                "description) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (_next_number(conn, "payment_vouchers"), date, account_kind, account_id,
+                 "purchase", invoice_id, 1, totals["total"], totals["total"],
+                 f"دفع فاتورة مشتريات #{invoice_id} نقداً"),
+            )
+    except Exception:
+        conn.rollback()
+        raise
+    conn.commit()
+    return invoice_id
+
+
+def delete_purchase_invoice(conn, invoice_id: int) -> None:
+    row = conn.execute("SELECT date FROM purchase_invoices WHERE id=?",
+                       (invoice_id,)).fetchone()
+    if not row:
+        return
+    ensure_movement_editable(conn, row["date"])
+    conn.execute("DELETE FROM payment_vouchers WHERE purchase_invoice_id=?",
+                 (invoice_id,))
+    conn.execute("DELETE FROM purchase_invoices WHERE id=?", (invoice_id,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# الإشعارات الدائنة والمدينة (بديل تعديل الفاتورة بعد إصدارها)
+# ---------------------------------------------------------------------------
+def list_creditable_invoice_trips(conn, invoice_id: int) -> list[dict]:
+    """نقلات الفاتورة وقيمة كل نقلة وضريبتها وحالة إصدار مرتجع سابق لها."""
+    inv = conn.execute("SELECT id, vat_rate FROM invoices WHERE id=?",
+                       (invoice_id,)).fetchone()
+    if not inv:
+        raise RuleError("الفاتورة المرتبطة غير موجودة.")
+    credited = {r["trip_id"] for r in conn.execute(
+        "SELECT trip_id FROM credit_note_trips")}
+    vat_rate = float(inv["vat_rate"] or 0)
+    out = []
+    for trip in conn.execute(
+        "SELECT id, from_loc, to_loc, qty, unit_price, price FROM invoice_trips "
+        "WHERE invoice_id=? ORDER BY id", (invoice_id,),
+    ):
+        amount = tax.round2(trip["price"])
+        vat_amount = tax.round2((amount * vat_rate) / 100.0)
+        out.append({
+            "id": trip["id"], "from_loc": trip["from_loc"] or "",
+            "to_loc": trip["to_loc"] or "", "qty": float(trip["qty"] or 1),
+            "unit_price": float(trip["unit_price"] or amount), "amount": amount,
+            "vat_amount": vat_amount, "total": tax.round2(amount + vat_amount),
+            "already_credited": trip["id"] in credited,
+        })
+    return out
+
+
+def save_credit_debit_note(conn, data: dict) -> int:
+    """إصدار إشعار دائن (مرتجع نقلات أو مبلغ) أو إشعار مدين."""
+    note_type = data.get("note_type")
+    if note_type not in ("credit", "debit"):
+        raise RuleError("نوع الإشعار غير صالح.")
+    invoice_id = _positive_id(data.get("invoice_id"), "الفاتورة")
+    customer_id = _positive_id(data.get("customer_id"), "العميل")
+    reason = _txt(data.get("reason", ""), "سبب الإشعار")
+    ensure_not_blank(reason, "سبب الإشعار إلزامي للمراجعة المحاسبية")
+    note_date = data.get("date", "")
+    ensure_not_blank(note_date, "تاريخ الإشعار")
+    inv = conn.execute("SELECT customer_id, date FROM invoices WHERE id=?",
+                       (invoice_id,)).fetchone()
+    if not inv:
+        raise RuleError("الفاتورة المرتبطة غير موجودة.")
+    if int(inv["customer_id"]) != customer_id:
+        raise RuleError("العميل المحدد لا يطابق عميل الفاتورة.")
+    if note_date < str(inv["date"]):
+        raise RuleError("تاريخ الإشعار لا يجوز أن يسبق تاريخ الفاتورة.")
+    ensure_date_in_open_year(conn, note_date)
+
+    vat_rate = float(conn.execute(
+        "SELECT vat_rate FROM invoices WHERE id=?", (invoice_id,)).fetchone()["vat_rate"] or 0)
+
+    # مرتجع نقلة: المبلغ والضريبة يُقرآن من أسعار النقلات لا من الواجهة
+    trip_ids = data.get("trip_ids")
+    if note_type == "credit" and trip_ids is not None:
+        if not isinstance(trip_ids, list) or not trip_ids:
+            raise RuleError("اختر نقلة واحدة على الأقل لإصدار الإشعار الدائن.")
+        trip_ids = [_positive_id(t, "النقلة") for t in trip_ids]
+        if len(set(trip_ids)) != len(trip_ids):
+            raise RuleError("قائمة النقلات المختارة تحتوي على تكرار.")
+        amount = 0.0
+        for tid in trip_ids:
+            row = conn.execute(
+                "SELECT t.id, t.invoice_id, t.price FROM invoice_trips t "
+                "WHERE t.id=?", (tid,)).fetchone()
+            if not row:
+                raise RuleError("النقلة المحددة غير موجودة.")
+            if int(row["invoice_id"]) != invoice_id:
+                raise RuleError("إحدى النقلات المختارة لا تخص هذه الفاتورة.")
+            if conn.execute("SELECT id FROM credit_note_trips WHERE trip_id=?",
+                            (tid,)).fetchone():
+                raise RuleError("سبق إصدار إشعار دائن لإحدى النقلات المختارة.")
+            amount += float(row["price"] or 0)
+        amount = tax.round2(amount)
+        ensure_positive(amount, "مبلغ الإشعار")
+    else:
+        amount = _round_money(data.get("amount", 0))
+        ensure_positive(amount, "مبلغ الإشعار")
+        vat_rate = _bounded(data.get("vat_rate", vat_rate), "نسبة الضريبة", 0, 100)
+
+    number = _next_number(conn, "credit_debit_notes")
+    cur = conn.execute(
+        "INSERT INTO credit_debit_notes(number, note_type, invoice_id, customer_id, "
+        "date, amount, vat_rate, reason) VALUES(?,?,?,?,?,?,?,?)",
+        (number, note_type, invoice_id, customer_id, note_date, amount, vat_rate, reason),
+    )
+    note_id = int(cur.lastrowid)
+    if note_type == "credit" and trip_ids:
+        for tid in trip_ids:
+            conn.execute(
+                "INSERT INTO credit_note_trips(note_id, trip_id) VALUES(?,?)",
+                (note_id, tid),
+            )
+    conn.commit()
+    return note_id
+
+
+def list_credit_debit_notes(conn, d_from=None, d_to=None,
+                            note_type=None) -> list[dict]:
+    sql = ("SELECT n.*, i.number AS invoice_number, c.name AS customer_name, "
+           "c.code AS customer_code FROM credit_debit_notes n "
+           "JOIN invoices i ON i.id=n.invoice_id "
+           "JOIN customers c ON c.id=n.customer_id WHERE 1=1")
+    params: list = []
+    if d_from:
+        sql += " AND n.date >= ?"
+        params.append(d_from)
+    if d_to:
+        sql += " AND n.date <= ?"
+        params.append(d_to)
+    if note_type:
+        sql += " AND n.note_type=?"
+        params.append(note_type)
+    sql += " ORDER BY n.date DESC, n.number DESC"
+    out = []
+    for r in conn.execute(sql, params).fetchall():
+        d = dict(r)
+        d["total"] = calc.note_total(d["amount"], d["vat_rate"])
+        d["trip_labels"] = [
+            f"{t['from_loc'] or '—'} ← {t['to_loc'] or '—'}"
+            for t in conn.execute(
+                "SELECT t.from_loc, t.to_loc FROM credit_note_trips l "
+                "JOIN invoice_trips t ON t.id=l.trip_id WHERE l.note_id=?", (d["id"],))]
+        out.append(d)
+    return out
+
+
+def get_credit_debit_note(conn, note_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM credit_debit_notes WHERE id=?",
+                       (note_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["total"] = calc.note_total(d["amount"], d["vat_rate"])
+    d["trip_ids"] = [r["trip_id"] for r in conn.execute(
+        "SELECT trip_id FROM credit_note_trips WHERE note_id=?", (note_id,))]
+    return d
+
+
+def delete_credit_debit_note(conn, note_id: int) -> None:
+    row = conn.execute("SELECT date FROM credit_debit_notes WHERE id=?",
+                       (note_id,)).fetchone()
+    if not row:
+        return
+    ensure_movement_editable(conn, row["date"])
+    conn.execute("DELETE FROM credit_debit_notes WHERE id=?", (note_id,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# بنود الخصومات المُتتبَّعة على الموظف/السائق
+# ---------------------------------------------------------------------------
+def list_deductions(conn, d_from=None, d_to=None, employee_id=None) -> list[dict]:
+    sql = ("SELECT d.*, e.name AS employee_name, e.code AS employee_code "
+           "FROM employee_deductions d JOIN employees e ON e.id=d.employee_id WHERE 1=1")
+    params: list = []
+    if d_from:
+        sql += " AND d.date >= ?"
+        params.append(d_from)
+    if d_to:
+        sql += " AND d.date <= ?"
+        params.append(d_to)
+    if employee_id:
+        sql += " AND d.employee_id=?"
+        params.append(employee_id)
+    sql += " ORDER BY d.date DESC, d.number DESC"
+    out = []
+    for r in conn.execute(sql, params).fetchall():
+        d = dict(r)
+        settled = tax.round2(_scalar(
+            conn, "SELECT COALESCE(SUM(amount),0) FROM deduction_settlements "
+                  "WHERE employee_deduction_id=?", (d["id"],)))
+        d["settled"] = settled
+        d["remaining"] = tax.round2(float(d["amount"] or 0) - settled)
+        d["status"] = ("closed" if d["remaining"] <= 0.009
+                       else ("partial" if settled > 0 else "open"))
+        out.append(d)
+    return out
+
+
+def get_deduction(conn, deduction_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM employee_deductions WHERE id=?",
+                        (deduction_id,)).fetchone()
+
+
+def save_deduction(conn, data: dict, deduction_id: int | None = None) -> int:
+    date = data.get("date", "")
+    ensure_not_blank(date, "تاريخ بند الخصم")
+    employee_id = _positive_id(data.get("employee_id"), "الموظف/السائق")
+    if get_employee(conn, employee_id) is None:
+        raise RuleError("الموظف المحدد غير موجود.")
+    amount = _round_money(data.get("amount", 0))
+    ensure_positive(amount, "مبلغ الخصم")
+    reason = _txt(data.get("reason", ""), "سبب الخصم")
+    ensure_not_blank(reason, "سبب الخصم")
+    notes = _txt(data.get("notes", ""), "الملاحظات")
+
+    if deduction_id:
+        old = conn.execute("SELECT date FROM employee_deductions WHERE id=?",
+                           (deduction_id,)).fetchone()
+        if not old:
+            raise RuleError("بند الخصم غير موجود.")
+        settled = tax.round2(_scalar(
+            conn, "SELECT COALESCE(SUM(amount),0) FROM deduction_settlements "
+                  "WHERE employee_deduction_id=?", (deduction_id,)))
+        if amount < settled - 0.01:
+            raise RuleError(
+                "لا يمكن تخفيض بند الخصم أقل مما خُصم منه فعلياً في المسيرات "
+                f"({settled}).")
+        ensure_movement_editable(conn, old["date"], date)
+        conn.execute(
+            "UPDATE employee_deductions SET date=?, employee_id=?, amount=?, reason=?, "
+            "notes=? WHERE id=?",
+            (date, employee_id, amount, reason, notes, deduction_id),
+        )
+        conn.commit()
+        return deduction_id
+
+    ensure_date_in_open_year(conn, date)
+    number = _next_number(conn, "employee_deductions")
+    cur = conn.execute(
+        "INSERT INTO employee_deductions(number, date, employee_id, amount, reason, notes) "
+        "VALUES(?,?,?,?,?,?)",
+        (number, date, employee_id, amount, reason, notes),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def delete_deduction(conn, deduction_id: int) -> None:
+    row = conn.execute("SELECT date FROM employee_deductions WHERE id=?",
+                       (deduction_id,)).fetchone()
+    if not row:
+        return
+    settled = _count(conn, "SELECT COUNT(*) FROM deduction_settlements "
+                           "WHERE employee_deduction_id=?", (deduction_id,))
+    if settled:
+        raise RuleError(
+            "لا يمكن حذف بند خصم خُصم جزء/كله في مسير رواتب.\n"
+            "احذف المسيرات المرتبطة به أولاً."
+        )
+    ensure_movement_editable(conn, row["date"])
+    conn.execute("DELETE FROM employee_deductions WHERE id=?", (deduction_id,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# ترحيل السنة المالية
+# ---------------------------------------------------------------------------
+def year_opening_balances(conn, year_id: int) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM year_opening_balances WHERE year_id=? ORDER BY entity_type, "
+        "entity_id", (year_id,))]
+
+
+def rollover_year(conn, year_id: int, next_year: int, date_from: str,
+                  date_to: str) -> int:
+    """إقفال سنة وترحيلها: سنة جديدة مفتوحة + أرصدة افتتاحية مستقلة.
+
+    مطابق لـ create_next_financial_year في نسخة الويب:
+      • السنة السابقة يجب أن تكون مغلقة.
+      • الأرصدة تُحفظ في year_opening_balances دون تعديل opening_balance الأصلي
+        ودون تكرار الحركات.
+    """
+    clean_next = _bounded(next_year, "السنة التالية", 1900, 2200, True)
+    ensure_not_blank(date_from, "تاريخ بداية السنة التالية")
+    ensure_not_blank(date_to, "تاريخ نهاية السنة التالية")
+    if date_from >= date_to or str(date_from)[:4] != str(clean_next):
+        raise RuleError("نطاق السنة المالية التالية غير صالح.")
+    y = get_year(conn, year_id)
+    if not y:
+        raise RuleError("السنة المالية غير موجودة.")
+    if y["status"] != "closed":
+        raise RuleError("يجب إغلاق السنة السابقة أولاً.")
+    if conn.execute("SELECT id FROM financial_years WHERE year=?",
+                    (clean_next,)).fetchone():
+        raise RuleError("السنة الجديدة موجودة مسبقاً.")
+
+    cur = conn.execute(
+        "INSERT INTO financial_years(year, date_from, date_to, status, notes) "
+        "VALUES(?,?,?,'open','تم الترحيل من السنة السابقة')",
+        (clean_next, date_from, date_to),
+    )
+    new_id = int(cur.lastrowid)
+    pairs = (
+        ("customer", "SELECT id FROM customers ORDER BY code",
+         lambda rid: calc.customer_balance(conn, rid)),
+        ("cashbox", "SELECT id FROM cashboxes ORDER BY code",
+         lambda rid: calc.account_balance(conn, "cashbox", rid)),
+        ("bank", "SELECT id FROM banks ORDER BY code",
+         lambda rid: calc.account_balance(conn, "bank", rid)),
+        ("supplier", "SELECT id FROM suppliers ORDER BY code",
+         lambda rid: calc.supplier_balance(conn, rid)),
+    )
+    for entity_type, sql, balance_fn in pairs:
+        for row in conn.execute(sql).fetchall():
+            conn.execute(
+                "INSERT INTO year_opening_balances(year_id, entity_type, entity_id, "
+                "balance) VALUES(?,?,?,?)",
+                (new_id, entity_type, row["id"], tax.round2(balance_fn(row["id"]))),
+            )
+    conn.commit()
+    return new_id
+
+
+# ---------------------------------------------------------------------------
 # المرفقات (تُخزَّن داخل مجلد البيانات وتُحفظ مساراتها في الفاتورة)
 # ---------------------------------------------------------------------------
 def store_attachment(src: str) -> str:
-    """نسخ ملف مرفق إلى مجلد المرفقات (باسم فريد) وإرجاع المسار النسبي."""
+    """نسخ ملف مرفق إلى مجلد المرفقات (باسم فريد) وإرجاع المسار النسبي.
+
+    الاسم المأخوذ هو اسم الملف وحده بلا أي جزء مساري، فلا يمكن للمرفق
+    أن يُكتب خارج مجلد المرفقات.
+    """
     src_path = Path(src)
+    name = src_path.name
+    if not name or name in (".", ".."):
+        raise RuleError("اسم المرفق غير صالح.")
+    if not src_path.is_file():
+        raise RuleError("المرفق المحدد ليس ملفاً موجوداً.")
+    if src_path.stat().st_size > 25 * 1024 * 1024:
+        raise RuleError("حجم المرفق أكبر من 25 ميجابايت.")
     folder = db.attachments_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / src_path.name
+    dest = folder / name
     i = 1
     while dest.exists():
         dest = folder / f"{src_path.stem}_{i}{src_path.suffix}"
         i += 1
     shutil.copy(str(src_path), str(dest))
-    return str(dest.relative_to(db.data_dir()))
+    rel = str(dest.relative_to(db.data_dir()))
+    # تأكيد أخير أن الوجهة لم تخرج من مجلد المرفقات
+    if not dest.resolve().is_relative_to(folder.resolve()):
+        raise RuleError("مسار المرفق غير صالح.")
+    return rel

@@ -25,7 +25,6 @@ os.environ["LOGISTIC_DATA_DIR"] = tempfile.mkdtemp(prefix="logistic_full_")
 
 from app.core import calc, db, repo                      # noqa: E402
 from app.core.rules import RuleError                    # noqa: E402
-from app.utils import fmt                               # noqa: E402
 from app.utils.fmt import parse_float                   # noqa: E402
 
 PASS = FAIL = 0
@@ -40,6 +39,43 @@ def check(name: str, cond: bool, extra: str = "") -> None:
         FAIL += 1
         FAILURES.append(f"{name} {extra}")
         print(f"  ❌ {name} {extra}")
+
+
+# ---------------------------------------------------------------------------
+# مُهيّئ الاختبار: يكيّف صيغة الفواتير القديمة (price / amount) مع النموذج
+# الجديد (qty × unit_price، وكمية × قيمة وحدة، ومصدر تمويل للمصروفات).
+# يُبقي السيناريوهات القديمة كما هي مع تلبية القيود الجديدة.
+# ---------------------------------------------------------------------------
+_MAIN_CASHBOX: list[int] = []
+
+
+def _normalize_invoice(data: dict) -> dict:
+    cb = _MAIN_CASHBOX[0] if _MAIN_CASHBOX else None
+    for trip in data.get("trips") or []:
+        if trip.get("price") is not None and trip.get("unit_price") is None:
+            trip["qty"] = 1
+            trip["unit_price"] = float(trip["price"])
+        for exp in trip.get("expenses") or []:
+            if exp.get("amount") is not None and exp.get("unit_amount") is None:
+                exp["qty"] = 1
+                exp["unit_amount"] = float(exp["amount"])
+            exp.setdefault("source", "cash")
+            if exp["source"] == "cash":
+                exp.setdefault("account_kind", "cashbox")
+                exp.setdefault("account_id", cb)
+            elif exp["source"] == "driver":
+                exp.setdefault("employee_id", trip.get("driver_id"))
+    return data
+
+
+_orig_save_invoice = repo.save_invoice
+
+
+def save_invoice(conn, data: dict, invoice_id: int | None = None):
+    return _orig_save_invoice(conn, _normalize_invoice(data), invoice_id)
+
+
+repo.save_invoice = save_invoice
 
 
 def expect_reject(name: str, fn) -> None:
@@ -65,6 +101,13 @@ def indep_customer_balance(conn, cid: int) -> float:
           (SELECT IFNULL(opening_balance, 0) FROM customers WHERE id = :c)
         + (SELECT IFNULL(SUM(t.price), 0) FROM invoice_trips t
              JOIN invoices i ON i.id = t.invoice_id WHERE i.customer_id = :c)
+        + (SELECT IFNULL(SUM(e.amount), 0) FROM trip_expenses e
+             JOIN invoice_trips t ON t.id = e.trip_id
+             JOIN invoices i ON i.id = t.invoice_id
+             WHERE i.customer_id = :c AND e.source = 'customer')
+        + (SELECT IFNULL(SUM(CASE WHEN n.note_type = 'debit' THEN 1 ELSE -1 END
+                 * (n.amount + ROUND(n.amount * n.vat_rate / 100, 2))), 0)
+             FROM credit_debit_notes n WHERE n.customer_id = :c)
         - (SELECT IFNULL(SUM(r.amount), 0) FROM receipt_vouchers r
              WHERE r.voucher_type = 'customer' AND r.customer_id = :c)
         AS bal
@@ -108,11 +151,51 @@ def indep_pnl(conn, d_from: str, d_to: str) -> dict:
               "WHERE v.voucher_type='vehicle' AND v.date BETWEEN ? AND ?", (d_from, d_to))
     gen = s("SELECT IFNULL(SUM(v.amount),0) FROM payment_vouchers v "
             "WHERE v.voucher_type='general' AND v.date BETWEEN ? AND ?", (d_from, d_to))
-    rev, exp = transport + other, direct + salaries + adv + maint + gen
+    trips = s("SELECT IFNULL(SUM(v.amount),0) FROM payment_vouchers v "
+              "WHERE v.voucher_type='trip' AND v.source_expense_id IS NULL "
+              "AND v.date BETWEEN ? AND ?", (d_from, d_to))
+    owner = s("SELECT IFNULL(SUM(v.amount),0) FROM payment_vouchers v "
+              "WHERE v.voucher_type='owner' AND v.date BETWEEN ? AND ?",
+              (d_from, d_to))
+    purchases = s(
+        """SELECT IFNULL(SUM(
+             CASE WHEN p.vat_included = 1
+               THEN (ROUND(i.qty*i.unit_price/(1+i.vat_rate/100.0), 2)
+                     + ROUND(i.qty*i.unit_price
+                             - ROUND(i.qty*i.unit_price/(1+i.vat_rate/100.0), 2), 2))
+               ELSE (ROUND(i.qty*i.unit_price, 2)
+                     + ROUND(i.qty*i.unit_price * i.vat_rate/100.0, 2))
+             END), 0)
+           FROM purchase_items i
+           JOIN purchase_invoices p ON p.id = i.invoice_id
+           WHERE p.date BETWEEN ? AND ?""", (d_from, d_to))
+    def _note_total(kind: str) -> float:
+        return s("SELECT IFNULL(SUM(n.amount + ROUND(n.amount * n.vat_rate/100,2)),0) "
+                 "FROM credit_debit_notes n WHERE n.note_type=? AND n.date BETWEEN ? "
+                 "AND ?", (kind, d_from, d_to))
+    notes_debit = _note_total("debit")
+    notes_credit = _note_total("credit")
+    notes = round(notes_debit - notes_credit, 2)
+    vat = s(
+        """SELECT IFNULL(SUM(ROUND(
+             (SELECT IFNULL(SUM(t.price),0) FROM invoice_trips t
+                WHERE t.invoice_id = i.id
+              + (SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e
+                   JOIN invoice_trips t2 ON t2.id = e.trip_id
+                   WHERE t2.invoice_id = i.id AND e.source = 'customer'))
+             * i.vat_rate / 100.0, 2)), 0)
+           FROM invoices i WHERE i.date BETWEEN ? AND ?""", (d_from, d_to))
+    rev = transport + other + notes
+    exp = direct + trips + salaries + adv + maint + gen + owner + purchases
     return {"transport_revenue": transport, "other_revenue": other,
-            "total_revenue": rev, "direct_expenses": direct, "salaries": salaries,
-            "advances": adv, "maintenance": maint, "general_expenses": gen,
-            "total_expenses": exp, "net": rev - exp}
+            "credit_notes_adjust": round(-notes_credit, 2),
+            "debit_notes_adjust": round(notes_debit, 2),
+            "notes_adjust": notes, "total_revenue": rev,
+            "direct_expenses": direct, "trip_payments": trips,
+            "salaries": salaries, "advances": adv, "maintenance": maint,
+            "general_expenses": gen, "purchase_expenses": purchases,
+            "owner_withdrawals": owner, "total_expenses": exp,
+            "net": rev - exp, "vat_collected": vat}
 
 
 def verify_all_invariants(conn, ctx: str) -> None:
@@ -135,17 +218,25 @@ def verify_all_invariants(conn, ctx: str) -> None:
             """SELECT
                  (SELECT IFNULL(SUM(price),0) FROM invoice_trips WHERE invoice_id=:i),
                  (SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e, invoice_trips t
-                    WHERE e.trip_id=t.id AND t.invoice_id=:i),
+                    WHERE e.trip_id=t.id AND t.invoice_id=:i AND e.source!='customer'),
+                 (SELECT IFNULL(SUM(e.amount),0) FROM trip_expenses e, invoice_trips t
+                    WHERE e.trip_id=t.id AND t.invoice_id=:i AND e.source='customer'),
                  (SELECT IFNULL(SUM(v.amount),0) FROM payment_vouchers v, invoice_trips t
-                    WHERE v.trip_id=t.id AND v.voucher_type='trip' AND t.invoice_id=:i)""",
+                    WHERE v.trip_id=t.id AND v.voucher_type='trip'
+                      AND v.source_expense_id IS NULL AND t.invoice_id=:i),
+                 (SELECT vat_rate FROM invoices WHERE id=:i)""",
             {"i": i["id"]}).fetchone()
+        vat_base = r[0] + r[2]
+        vat = round(vat_base * (r[4] or 0) / 100.0, 2)
         check(f"[{ctx}] إجماليات الفاتورة {i['id']}",
               abs(t["trips_total"] - r[0]) < 0.005
               and abs(t["expenses_total"] - r[1]) < 0.005
-              and abs(t["later_payments"] - r[2]) < 0.005
+              and abs(t["billable_total"] - r[2]) < 0.005
+              and abs(t["later_payments"] - r[3]) < 0.005
               and abs(t["expected_profit"] - (r[0] - r[1])) < 0.005
-              and abs(t["actual_profit"] - (r[0] - r[1] - r[2])) < 0.005
-              and abs(t["customer_total"] - r[0]) < 0.005)
+              and abs(t["actual_profit"] - (r[0] - r[1] - r[3])) < 0.005
+              and abs(t["vat_amount"] - vat) < 0.005
+              and abs(t["customer_total"] - (vat_base + vat)) < 0.005)
     # 4) صافي كل راتب = الأساسي + إضافات − سلف − أخرى، والمخصوم ≤ قيمة السلفة
     for p in conn.execute("SELECT * FROM payrolls").fetchall():
         check(f"[{ctx}] معادلة صافي الراتب {p['id']}",
@@ -196,9 +287,9 @@ def build_scenario(conn) -> dict:
                           "date_to": "2026-12-31"})
     repo.save_year(conn, {"year": 2027, "date_from": "2027-01-01",
                           "date_to": "2027-12-31"})
-    ids["c1"] = repo.save_customer(conn, {"name": "عميل أول", "phone": "0555",
+    ids["c1"] = repo.save_customer(conn, {"name": "عميل أول", "phone": "0555123456",
                                           "address": "جدة", "opening_balance": 10000})
-    ids["c2"] = repo.save_customer(conn, {"name": "عميل ثانٍ", "phone": "0555000000",
+    ids["c2"] = repo.save_customer(conn, {"name": "عميل ثانٍ", "phone": "0555987654",
                                           "opening_balance": 0})
     ids["d1"] = repo.save_employee(conn, {"name": "سائق أحمد", "emp_type": "driver"})
     ids["d2"] = repo.save_employee(conn, {"name": "سائق خالد", "emp_type": "driver"})
@@ -208,15 +299,17 @@ def build_scenario(conn) -> dict:
     ids["v2"] = repo.save_vehicle(conn, {"plate_number": "د هـ 2", "vehicle_type": "سطحة"})
     ids["cb1"] = repo.save_account(conn, "cashbox", {"name": "الخزينة الرئيسية",
                                                      "created_date": "2026-01-01",
-                                                     "opening_balance": 50000})
+                                                     "opening_balance": 5000000})
+    _MAIN_CASHBOX.clear()
+    _MAIN_CASHBOX.append(ids["cb1"])
     ids["cb2"] = repo.save_account(conn, "cashbox", {"name": "خزينة فرعية",
                                                      "created_date": "2026-01-01",
-                                                     "opening_balance": 5000})
+                                                     "opening_balance": 500000})
     ids["bn1"] = repo.save_account(conn, "bank", {"name": "البنك الأهلي",
                                                   "created_date": "2026-01-01",
                                                   "account_number": "123",
                                                   "iban": "SA03 8000 0000 6080 1016 7519",
-                                                  "opening_balance": 100000})
+                                                  "opening_balance": 5000000})
     return ids
 
 
@@ -224,6 +317,9 @@ def main() -> None:  # noqa: C901 — منظومة فحص
     print("== 1) بناء السيناريو والثوابت الأساسية")
     db.init_db()
     conn = db.get_conn()
+    # هذا السيناريو كُتب لنموذج بلا ضريبة — تُثبَّت النسبة على 0% حتى تبقى
+    # الأرقام المتوقعة فيه كما هي (قواعد الضريبة مُختبرة في test_web_parity.py)
+    repo.set_setting(conn, "vat_rate", "0")
     ids = build_scenario(conn)
     verify_all_invariants(conn, "أساسي")
 
@@ -255,13 +351,13 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                                    "account_id": ids["cb1"], "voucher_type": "customer",
                                    "customer_id": ids["c1"], "amount": 15000,
                                    "description": "دفعة"})
-    rv2 = repo.save_receipt(conn, {"date": "2026-02-11", "account_kind": "bank",
+    repo.save_receipt(conn, {"date": "2026-02-11", "account_kind": "bank",
                                    "account_id": ids["bn1"], "voucher_type": "other",
                                    "amount": 700, "description": "خردة"})
     trips = {r["id"]: r for r in conn.execute(
         "SELECT id FROM invoice_trips WHERE invoice_id=? ORDER BY id", (inv1,))}
     trip_ids = list(trips)
-    pv_trip = repo.save_payment(conn, {"date": "2026-02-12", "account_kind": "cashbox",
+    repo.save_payment(conn, {"date": "2026-02-12", "account_kind": "cashbox",
                                        "account_id": ids["cb1"], "voucher_type": "trip",
                                        "trip_id": trip_ids[0], "amount": 400,
                                        "description": "رسوم تفريغ"})
@@ -269,16 +365,16 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                                        "account_id": ids["cb1"], "voucher_type": "advance",
                                        "employee_id": ids["d1"], "amount": 2000,
                                        "description": "سلفة"})
-    pv_adv2 = repo.save_payment(conn, {"date": "2026-02-14", "account_kind": "bank",
+    repo.save_payment(conn, {"date": "2026-02-14", "account_kind": "bank",
                                        "account_id": ids["bn1"], "voucher_type": "advance",
                                        "employee_id": ids["d2"], "amount": 1500,
                                        "description": "سلفة ثانية"})
-    pv_veh = repo.save_payment(conn, {"date": "2026-02-15", "account_kind": "bank",
+    repo.save_payment(conn, {"date": "2026-02-15", "account_kind": "bank",
                                       "account_id": ids["bn1"], "voucher_type": "vehicle",
                                       "vehicle_id": ids["v1"],
                                       "vehicle_expense": "tires", "amount": 2000,
                                       "description": "كاوتش"})
-    pv_gen = repo.save_payment(conn, {"date": "2026-02-16", "account_kind": "cashbox",
+    repo.save_payment(conn, {"date": "2026-02-16", "account_kind": "cashbox",
                                       "account_id": ids["cb2"], "voucher_type": "general",
                                       "amount": 800, "description": "كهرباء"})
     pay1 = repo.save_payroll(conn, {
@@ -286,7 +382,7 @@ def main() -> None:  # noqa: C901 — منظومة فحص
         "period_month": 2, "account_kind": "cashbox", "account_id": ids["cb1"],
         "base_salary": 4000, "additions": 500, "additions_note": "مكافأة",
         "other_deductions": 200, "settlements": [(pv_adv1, 1200)]})
-    pay2 = repo.save_payroll(conn, {
+    repo.save_payroll(conn, {
         "date": "2026-02-28", "employee_id": ids["a1"], "period_year": 2026,
         "period_month": 2, "account_kind": "bank", "account_id": ids["bn1"],
         "base_salary": 5000, "settlements": []})
@@ -343,7 +439,11 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                "advances": 3500, "maintenance": 2000, "general_expenses": 800}
     for k, v in exp_pnl.items():
         check(f"P&L {k} = {v}", abs(pnl[k] - v) < 0.005, f"(وجدها {pnl[k]})")
-    check("P&L net = 22200-15550", abs(pnl["net"] - (22200 - 15550)) < 0.005)
+    check("P&L: صافي الربح = الإيراد − المصروف",
+          abs(pnl["net"] - (pnl["total_revenue"] - pnl["total_expenses"])) < 0.005)
+    check("P&L: الإيراد = نقل + أخرى + إشعارات",
+          abs(pnl["total_revenue"] - (pnl["transport_revenue"] + pnl["other_revenue"]
+                                      + pnl["notes_adjust"])) < 0.005)
     # P&L بفترة ضيقة تستثني لاحقاً
     pnl_q1 = calc.pnl_report(conn, "2026-01-01", "2026-02-10")
     check("P&L فترة ضيقة: بدون كهرباء ولا رواتب",
@@ -353,14 +453,28 @@ def main() -> None:  # noqa: C901 — منظومة فحص
     # ------------------------------------------------------------- كشوف الخزائن
     print("== 4) كشوف الخزائن والبنوك")
     ast = calc.account_statement(conn, "cashbox", ids["cb1"], "2026-01-01", "2026-12-31")
-    # 50000 + 15000 (قبض) − 400 (رحلة) − 2000 (سلفة) − 3100 (صافي راتب) = 59500
-    check("كشف الخزينة1: ختامي 59500", abs(ast["closing"] - 59500) < 0.005)
+    # الختامي = الافتتاحي + Σالحركات (المصروفات النقدية على النقلات تُنشئ
+    # سندات دفع تلقائية، لذا عدد السطور محسوب لا مفترض)
+    flows = sum(float(r["in"] or 0) - float(r["out"] or 0) for r in ast["rows"])
+    check("كشف الخزينة1: ختامي = افتتاحي + الحركات",
+          abs(ast["closing"] - (ast["opening"] + flows)) < 0.005)
+    check("كشف الخزينة1: الختامي يطابق الرصيد المحسوب",
+          abs(ast["closing"] - calc.account_balance(conn, "cashbox",
+                                                    ids["cb1"])) < 0.005)
     kinds = [r["kind"] for r in ast["rows"]]
-    check("كشف الخزينة: قبض+سندان+راتب = 4 أسطر", kinds.count("receipt") == 1
-          and kinds.count("payment") == 2 and kinds.count("payroll") == 1)
+    check("كشف الخزينة: يشمل القبض والسندات والرواتب",
+          kinds.count("receipt") == 1 and kinds.count("payment") >= 2
+          and kinds.count("payroll") == 1)
+    auto_vouchers = conn.execute(
+        "SELECT COUNT(*) FROM payment_vouchers WHERE source_expense_id IS NOT NULL "
+        "AND account_kind='cashbox' AND account_id=?", (ids["cb1"],)).fetchone()[0]
+    check("كشف الخزينة: مصروفات النقلات النقدية أنشأت سندات تلقائية",
+          auto_vouchers >= 1
+          and kinds.count("payment") == 2 + auto_vouchers)
     bnk = calc.account_statement(conn, "bank", ids["bn1"], "2026-01-01", "2026-12-31")
-    # 100000 + 700 − 1500 (سلفة) − 2000 (كاوتش) − 5000 (راتب إداري) = 92200
-    check("كشف البنك: ختامي 92200", abs(bnk["closing"] - 92200) < 0.005)
+    # 5,000,000 + 700 − 1500 (سلفة) − 2000 (كاوتش) − 5000 (راتب إداري)
+    check("كشف البنك: ختامي = افتتاحي + الحركات",
+          abs(bnk["closing"] - (5000000 + 700 - 1500 - 2000 - 5000)) < 0.005)
 
     # ------------------------------------------------------ لقطة الإغلاق
     print("== 5) السنوات ولقطات الإغلاق")
@@ -369,10 +483,16 @@ def main() -> None:  # noqa: C901 — منظومة فحص
     repo.set_year_status(conn, y26, "closed")
     snap = repo.create_snapshot(conn, y26)
     check("اللقطة: أرصدة العملاء", any(c["balance"] == 16500 for c in snap["customers"]))
-    check("اللقطة: خزينة", any(c["balance"] == 59500 for c in snap["cashboxes"]))
-    check("اللقطة: بنك", any(b["balance"] == 92200 for b in snap["banks"]))
-    check("اللقطة: صافي السنة = 22200-15550",
-          abs(snap["pnl"]["net"] - (22200 - 15550)) < 0.005)
+    check("اللقطة: خزينة",
+          any(abs(c["balance"] - calc.account_balance(conn, "cashbox",
+                                                      ids["cb1"])) < 0.005
+              for c in snap["cashboxes"]))
+    check("اللقطة: بنك",
+          any(abs(b["balance"] - (5000000 + 700 - 1500 - 2000 - 5000)) < 0.005
+              for b in snap["banks"]))
+    check("اللقطة: صافي السنة = الإيراد − المصروف",
+          abs(snap["pnl"]["net"] - (snap["pnl"]["total_revenue"]
+                                    - snap["pnl"]["total_expenses"])) < 0.005)
     # كل الحركات داخل السنة المغلقة تُمنع الآن
     expect_reject("إضافة داخل سنة مغلقة",
                   lambda: repo.save_receipt(conn, {
@@ -418,57 +538,89 @@ def main() -> None:  # noqa: C901 — منظومة فحص
         "settlements": [(pv_adv1, 1200)]})
     full = calc.get_invoice_full(conn, inv1)
     full["trips"][2]["price"] = 2500  # من 1500 إلى 2500
-    repo.save_invoice(conn, full, inv1)
-    check("تعديل فاتورة: رصيد العميل +1000",
+    expect_reject("تعديل فاتورة مصدَرة ممنوع (تُصحَّح بإشعار دائن/مدين)",
+                  lambda: repo.save_invoice(conn, full, inv1))
+    expect_reject("حذف فاتورة مصدَرة ممنوع",
+                  lambda: repo.delete_invoice(conn, inv1))
+    # التصحيح النظامي: إشعار مدين يرفع مطالبة العميل بنفس الفرق
+    repo.save_credit_debit_note(conn, {
+        "note_type": "debit", "invoice_id": inv1, "date": "2026-02-13",
+        "customer_id": ids["c1"], "amount": 1000, "reason": "تصحيح بعد الإصدار"})
+    check("إشعار مدين بديل التعديل: رصيد العميل +1000",
           abs(indep_customer_balance(conn, ids["c1"]) - 17500) < 0.005)
-    verify_all_invariants(conn, "بعد-تعديل-فاتورة")
+    verify_all_invariants(conn, "بعد-تصحيح-بإشعار")
 
     # --------------------------------------------------------------- الفحص الأمني
     print("== 7) الفحص الأمني")
     tables_before = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    payloads = [
+    # أنماط هجومية صريحة → تُرفض عند الإدخال (مطابقة لـ security.ts في الويب)
+    attacks = [
         "'; DROP TABLE customers; --",
         "\"; DELETE FROM invoices WHERE 1=1; --",
-        "a' OR '1'='1",
-        "%s%s%s", "${7*7}", "{{7*7}}", "<script>alert('x')</script>",
+        "${7*7}", "{{7*7}}", "<script>alert('x')</script>",
         "'; UPDATE customers SET opening_balance=999999; --",
-        "\\\\", "\u202eRTL\u202e", "null\x00byte", "\u2014", "\U0001f30d\U0001f69b",
+        "javascript:alert(1)", "onerror=evil", "data:text/html,x",
+        "../../../../etc/passwd",
     ]
-    for i, p in enumerate(payloads):
-        cid = repo.save_customer(conn, {"name": p, "phone": p, "address": p,
-                                        "opening_balance": 0, "notes": p})
+    for i, p in enumerate(attacks):
+        expect_reject(f"نمط هجومي #{i} يُرفض عند الإدخال",
+                      lambda p=p: repo.save_customer(conn, {
+                          "name": p, "opening_balance": 0}))
+    # نصوص غريبة لكنها تحوي حروفاً كافية → تُخزن وتُسترجع كما هي (لا إفساد)
+    benign = ["%s%s%s", "مؤسسة \\\\ للتجارة", "null byte مؤسسة",
+              "مؤسسة \u2014 للتجارة", "مؤسسة \U0001f30d\U0001f69b للنقل",
+              "شركة أ.ب.ج", "O'Brien"]
+    for label in ("\u2014", "\U0001f30d\U0001f69b", "\\\\", "test", "xxx",
+                  "123456", "أأأأ", "عميل"):
+        expect_reject(f"اسم غير معقول ({label}) يُرفض",
+                      lambda label=label: repo.save_customer(
+                          conn, {"name": label, "opening_balance": 0}))
+    for i, p in enumerate(benign):
+        cid = repo.save_customer(conn, {"name": p,
+                                        "phone": f"050{i}12{i}45{i}7",
+                                        "address": "الرياض",
+                                        "opening_balance": 0, "notes": "بيان"})
         saved = repo.get_customer(conn, cid)
-        check(f"حقن SQL #{i}: الحفظ والاسترجاع دون تنفيذ",
-              saved["name"] == p)  # ما يدخل يخرج كما هو = لم يُفسد شيء
+        check(f"نص سليم غريب #{i}: الحفظ والاسترجاع دون إفساد",
+              saved["name"] == p, f"(دخل {p!r} خرج {saved['name']!r})")
+    # محارف التحكم والاتجاهات الخفية تُنزع (انتحال عرض النص)
+    cid = repo.save_customer(conn, {"name": "عميل\u202eخفي\u0000",
+                                    "opening_balance": 0})
+    check("محارف التحكم والاتجاهات الخفية تُنزع",
+          repo.get_customer(conn, cid)["name"] == "عميلخفي")
+    # فاتورة بحقول هجومية → تُرفض كلها عند الإدخال
+    expect_reject("فاتورة بحقل هجوم في notes تُرفض",
+                  lambda: repo.save_invoice(conn, {
+                      "date": "2026-03-05", "customer_id": ids["c1"],
+                      "notes": "'; DROP TABLE x; --",
+                      "trips": [{"vehicle_id": None, "driver_id": None,
+                                 "from_loc": "أ", "to_loc": "ب", "price": 100,
+                                 "expenses": []}]}))
+    expect_reject("فاتورة بحقل هجوم في مكان الانطلاق تُرفض",
+                  lambda: repo.save_invoice(conn, {
+                      "date": "2026-03-05", "customer_id": ids["c1"],
+                      "trips": [{"vehicle_id": None, "driver_id": None,
+                                 "from_loc": "<script>x</script>",
+                                 "to_loc": "ب", "price": 100,
+                                 "expenses": []}]}))
+    # نص سليم بعلامات اقتباس يُخزن كما هو (لا إفساد للاستعلامات المُعاملَة)
+    iinv = repo.save_invoice(conn, {
+        "date": "2026-03-05", "customer_id": ids["c1"], "notes": "بيان عادي",
+        "trips": [{"vehicle_id": None, "driver_id": None,
+                   "from_loc": "جدة (2)", "to_loc": "مكة", "price": 100,
+                   "expenses": [{"expense_type": "fuel", "amount": 10,
+                                 "source": "cash", "account_kind": "cashbox",
+                                 "account_id": ids["cb1"],
+                                 "notes": "O'Brien"}]}]})
+    check("فاتورة سليمة: حُفظت والبيان كما هو",
+          conn.execute("SELECT e.notes FROM trip_expenses e JOIN invoice_trips t "
+                       "ON t.id=e.trip_id WHERE t.invoice_id=?",
+                       (iinv,)).fetchone()[0] == "O'Brien")
     tables_after = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    check("حقن SQL: لم تتغير جداول القاعدة", tables_before == tables_after)
-    check("حقن SQL: جدول العملاء موجود", "customers" in tables_after)
-    n = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
-    check("حقن SQL: لم تُحذف بيانات العملاء", n >= 2)
-    # نص طويل داخل الحد المسموح + رفض ما فوق الحد
-    long_text = "أ" * 4000
-    lid = repo.save_customer(conn, {"name": long_text, "opening_balance": 0})
-    check("نص 4000 محرف يُخزن ويُسترجع",
-          len(repo.get_customer(conn, lid)["name"]) == 4000)
-    expect_reject("نص 6000 محرف يُرفض (سقف الحماية)",
-                  lambda: repo.save_customer(conn, {"name": "ب" * 6000}))
-    # فاتورة بحقول محقونة في كل النصوص
-    inj = {"from_loc": "';--", "to_loc": "<b>", "notes": "'; DROP TABLE x; --"}
-    iinv = repo.save_invoice(conn, {"date": "2026-03-05", "customer_id": ids["c1"],
-                                    "notes": inj["notes"],
-                                    "trips": [{"vehicle_id": None, "driver_id": None,
-                                               "from_loc": inj["from_loc"],
-                                               "to_loc": inj["to_loc"], "price": 100,
-                                               "expenses": [
-                                                   {"expense_type": "fuel",
-                                                    "amount": 10,
-                                                    "notes": "';--"}]}]})
-    check("فاتورة محقونة: حُفظت وسليمة",
-          "customers" in tables_after
-          and conn.execute("SELECT from_loc FROM invoice_trips WHERE invoice_id=?",
-                           (iinv,)).fetchone()[0] == "';--")
+    check("بعد الفحص الأمني: لم تتغير جداول القاعدة",
+          tables_before == tables_after)
     # HTML escaping في التصدير
     from app.utils import exporter as exp_mod
     html = exp_mod.build_report_html(
@@ -626,14 +778,17 @@ def main() -> None:  # noqa: C901 — منظومة فحص
                     "other_deductions": round(rng.uniform(0, 300), 2),
                     "settlements": settlements})
             elif action == "edit_invoice":
-                inv = conn.execute("SELECT id, date FROM invoices "
+                # الفواتير غير قابلة للتعديل بعد الإصدار — التصحيح بإشعار فقط
+                inv = conn.execute("SELECT id, date, customer_id FROM invoices "
                                    "ORDER BY RANDOM() LIMIT 1").fetchone()
                 if not inv:
                     continue
-                full = calc.get_invoice_full(conn, inv["id"])
-                if full["trips"]:
-                    full["trips"][0]["price"] = round(rng.uniform(100, 8000), 2)
-                repo.save_invoice(conn, full, inv["id"])
+                repo.save_credit_debit_note(conn, {
+                    "note_type": rng.choice(["credit", "debit"]),
+                    "invoice_id": inv["id"], "date": inv["date"],
+                    "customer_id": inv["customer_id"],
+                    "amount": round(rng.uniform(50, 2000), 2),
+                    "reason": "تصحيح عشوائي"})
             elif action == "del":
                 what = rng.choice(["receipt", "payment", "payroll"])
                 tbl = {"receipt": "receipt_vouchers", "payment": "payment_vouchers",

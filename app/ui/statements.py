@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDateEdit, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
 from ..core import calc, db, repo
@@ -164,3 +163,44 @@ class AccountStatementDialog(StatementDialog):
                 ("إجمالي الوارد", fmt.money(sum(r["in"] for r in st.get("rows", [])))),
                 ("إجمالي المنصرف", fmt.money(sum(r["out"] for r in st.get("rows", [])))),
                 ("الرصيد الحالي", fmt.money(st.get("closing", 0)))]
+
+
+class SupplierStatementDialog(StatementDialog):
+    """كشف حساب مورّد: الافتتاحي + فواتير المشتريات − سندات الدفع = الرصيد."""
+
+    def __init__(self, supplier_id: int, parent=None):
+        self.supplier_id = supplier_id
+        conn = db.get_conn()
+        s = repo.get_supplier(conn, supplier_id)
+        name = f"{s['code']} - {s['name']}" if s else "—"
+        super().__init__(f"كشف حساب مورّد: {name}", name, parent)
+
+    def headers(self) -> list[str]:
+        return ["التاريخ", "المستند", "البيان", "دائن (مستحق له)",
+                "مدين (مسدَّد)", "الرصيد"]
+
+    def load(self) -> None:
+        conn = db.get_conn()
+        st = calc.supplier_statement(conn, self.supplier_id,
+                                     self.from_edit.iso(), self.to_edit.iso())
+        rows = [[r["date"], r["doc"], r["desc"], fmt.money(r["credit"]),
+                 fmt.money(r["debit"]), fmt.money(r["balance"])] for r in st["rows"]]
+        totals = st["totals"]
+        rows.append(["", "الإجمالي / الرصيد النهائي", "",
+                     fmt.money(totals["credit"]), fmt.money(totals["debit"]),
+                     fmt.money(totals["balance"])])
+        self.table.set_rows(rows, bold_last=True)
+        self._st = st
+        self.summary.setText(
+            f"الرصيد الافتتاحي: {fmt.money(st['opening'])}    "
+            f"الرصيد الختامي (الحالي): {fmt.money(st['closing'])}    "
+            "(موجب = مستحق للمورّد علينا)")
+
+    def _summary_lines(self) -> list[tuple[str, str]]:
+        st = getattr(self, "_st", {})
+        totals = st.get("totals", {})
+        return [("المورّد", self.owner_label),
+                ("الرصيد الافتتاحي", fmt.money(st.get("opening", 0))),
+                ("إجمالي المشتريات", fmt.money(totals.get("credit", 0))),
+                ("إجمالي المسدَّد", fmt.money(totals.get("debit", 0))),
+                ("الرصيد الحالي", fmt.money(totals.get("balance", 0)))]

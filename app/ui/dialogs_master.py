@@ -7,10 +7,10 @@ from datetime import date
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QSpinBox, QTabWidget, QVBoxLayout
 )
 
-from ..core import calc, db, repo
+from ..core import calc, db, repo, tax
 from ..utils import exporter, fmt
 from ..utils.fmt import money as m
 from .widgets import (
@@ -27,9 +27,11 @@ def _text(s) -> str:
 # العملاء
 # ---------------------------------------------------------------------------
 class CustomerDialog(FormDialog):
+    """بيانات العميل: الاتصال + الرصيد + الحزمة الضريبية والعنوان الوطني."""
+
     def __init__(self, parent=None, customer_id: int | None = None,
                  read_only: bool = False):
-        super().__init__(parent, "بيانات العميل", read_only, width=560)
+        super().__init__(parent, "بيانات العميل", read_only, width=640)
         self.customer_id = customer_id
         conn = db.get_conn()
         self.name_edit = QLineEdit()
@@ -39,6 +41,18 @@ class CustomerDialog(FormDialog):
         self.add_row("رقم الهاتف", self.phone_edit)
         self.address_edit = QLineEdit()
         self.add_row("العنوان", self.address_edit)
+        self.name_en_edit = QLineEdit()
+        self.add_row("الاسم بالإنجليزية", self.name_en_edit)
+        self.email_edit = QLineEdit()
+        self.add_row("البريد الإلكتروني", self.email_edit)
+        self.contact_edit = QLineEdit()
+        self.add_row("مسؤول التواصل", self.contact_edit)
+        self.credit_edit = AmountEdit(0)
+        self.add_row("الحد الائتماني", self.credit_edit)
+        self.terms_edit = QSpinBox()
+        self.terms_edit.setRange(0, 3650)
+        self.terms_edit.setSuffix(" يوم")
+        self.add_row("مهلة السداد", self.terms_edit)
         self.opening_edit = AmountEdit()
         self.add_row("الرصيد الافتتاحي", self.opening_edit)
         self.notes_edit = QPlainTextEdit()
@@ -48,9 +62,50 @@ class CustomerDialog(FormDialog):
         self.balance_label.setObjectName("totalValue")
         self.add_row("الرصيد الحالي (تلقائي)", self.balance_label)
 
+        # --- الحزمة الضريبية والعنوان الوطني (لزاتكا والفاتورة الضريبية) ---
+        self.tax_number_edit = QLineEdit()
+        self.tax_number_edit.setPlaceholderText("15 رقماً يبدأ وينتهي بـ 3")
+        self.add_row("الرقم الضريبي", self.tax_number_edit)
+        self.cr_edit = QLineEdit()
+        self.cr_edit.setPlaceholderText("10 أرقام")
+        self.add_row("السجل التجاري", self.cr_edit)
+        self.entity_combo = QComboBox()
+        for key, label in tax.ENTITY_TYPES.items():
+            self.entity_combo.addItem(label, key)
+        self.add_row("نوع الكيان", self.entity_combo)
+        self.status_combo = QComboBox()
+        for key, label in tax.TAX_STATUSES.items():
+            self.status_combo.addItem(label, key)
+        self.add_row("الحالة الضريبية", self.status_combo)
+        self.country_combo = QComboBox()
+        for key, label in tax.COUNTRIES.items():
+            self.country_combo.addItem(label, key)
+        self.add_row("الدولة", self.country_combo)
+        self.region_combo = QComboBox()
+        self.region_combo.addItem("— اختر —", "")
+        for region in tax.SA_REGIONS:
+            self.region_combo.addItem(region, region)
+        self.add_row("المنطقة", self.region_combo)
+        self.city_edit = QLineEdit()
+        self.add_row("المدينة", self.city_edit)
+        self.district_edit = QLineEdit()
+        self.add_row("الحي", self.district_edit)
+        self.street_edit = QLineEdit()
+        self.add_row("الشارع", self.street_edit)
+        self.building_edit = QLineEdit()
+        self.building_edit.setPlaceholderText("4 أرقام")
+        self.add_row("رقم المبنى", self.building_edit)
+        self.postal_edit = QLineEdit()
+        self.postal_edit.setPlaceholderText("5 أرقام")
+        self.add_row("الرمز البريدي", self.postal_edit)
+        self.additional_edit = QLineEdit()
+        self.additional_edit.setPlaceholderText("4 أرقام")
+        self.add_row("الرقم الإضافي", self.additional_edit)
+
         if customer_id:
             c = repo.get_customer(conn, customer_id)
             if c:
+                d = dict(c)
                 self.setWindowTitle(f"بيانات العميل {c['code']}")
                 self.name_edit.setText(c["name"])
                 self.phone_edit.setText(c["phone"] or "")
@@ -58,6 +113,25 @@ class CustomerDialog(FormDialog):
                 self.opening_edit.set_value(c["opening_balance"])
                 self.notes_edit.setPlainText(c["notes"] or "")
                 self.balance_label.setText(fmt.money(calc.customer_balance(conn, customer_id)))
+                self.name_en_edit.setText(d.get("name_en") or "")
+                self.email_edit.setText(d.get("email") or "")
+                self.contact_edit.setText(d.get("contact_person") or "")
+                self.credit_edit.set_value(d.get("credit_limit") or 0)
+                self.terms_edit.setValue(int(d.get("payment_terms") or 0))
+                self.tax_number_edit.setText(d.get("tax_number") or "")
+                self.cr_edit.setText(d.get("commercial_reg") or "")
+                for combo, value in ((self.entity_combo, d.get("entity_type")),
+                                     (self.status_combo, d.get("tax_status")),
+                                     (self.country_combo, d.get("country")),
+                                     (self.region_combo, d.get("region"))):
+                    i = combo.findData(value)
+                    combo.setCurrentIndex(i if i >= 0 else 0)
+                self.city_edit.setText(d.get("city") or "")
+                self.district_edit.setText(d.get("district") or "")
+                self.street_edit.setText(d.get("street") or "")
+                self.building_edit.setText(d.get("building_no") or "")
+                self.postal_edit.setText(d.get("postal_code") or "")
+                self.additional_edit.setText(d.get("additional_no") or "")
         if read_only:
             self.lock_fields()
 
@@ -66,8 +140,25 @@ class CustomerDialog(FormDialog):
             "name": _text(self.name_edit.text()),
             "phone": _text(self.phone_edit.text()),
             "address": _text(self.address_edit.text()),
+            "name_en": _text(self.name_en_edit.text()),
+            "email": _text(self.email_edit.text()),
+            "contact_person": _text(self.contact_edit.text()),
+            "credit_limit": self.credit_edit.value(),
+            "payment_terms": self.terms_edit.value(),
             "opening_balance": self.opening_edit.value(),
             "notes": self.notes_edit.toPlainText().strip(),
+            "tax_number": _text(self.tax_number_edit.text()),
+            "commercial_reg": _text(self.cr_edit.text()),
+            "entity_type": self.entity_combo.currentData(),
+            "tax_status": self.status_combo.currentData(),
+            "country": self.country_combo.currentData(),
+            "region": self.region_combo.currentData(),
+            "city": _text(self.city_edit.text()),
+            "district": _text(self.district_edit.text()),
+            "street": _text(self.street_edit.text()),
+            "building_no": _text(self.building_edit.text()),
+            "postal_code": _text(self.postal_edit.text()),
+            "additional_no": _text(self.additional_edit.text()),
         }
         repo.save_customer(db.get_conn(), data, self.customer_id)
 

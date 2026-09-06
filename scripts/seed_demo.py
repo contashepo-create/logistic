@@ -22,20 +22,20 @@ def seed(conn) -> dict:
     repo.save_year(conn, {"year": y, "date_from": f"{y}-01-01",
                           "date_to": f"{y}-12-31", "notes": "سنة تشغيلية"})
     ids["cust1"] = repo.save_customer(conn, {
-        "name": "مؤسسة الرياض للإنشاءات", "phone": "0551112222",
+        "name": "مؤسسة الرياض للإنشاءات", "phone": "0551239988",
         "address": "الرياض — حي الصناعية", "opening_balance": 15000,
         "notes": "عميل مشاريع"})
     ids["cust2"] = repo.save_customer(conn, {
-        "name": "شركة مكة للمقاولات", "phone": "0563334444",
+        "name": "شركة مكة للمقاولات", "phone": "0563447788",
         "address": "مكة المكرمة", "opening_balance": 0, "notes": ""})
     ids["drv1"] = repo.save_employee(conn, {
-        "name": "أحمد الغامدي", "nationality": "سعودي", "phone": "0501111111",
+        "name": "أحمد الغامدي", "nationality": "سعودي", "phone": "0501234567",
         "emp_type": "driver", "notes": ""})
     ids["drv2"] = repo.save_employee(conn, {
-        "name": "خالد المصري", "nationality": "مصري", "phone": "0502222222",
+        "name": "خالد المصري", "nationality": "مصري", "phone": "0502345678",
         "emp_type": "driver", "notes": ""})
     ids["adm1"] = repo.save_employee(conn, {
-        "name": "سالم الحربي", "nationality": "سعودي", "phone": "0503333333",
+        "name": "سالم الحربي", "nationality": "سعودي", "phone": "0503456789",
         "emp_type": "admin", "notes": "مسؤول حركة"})
     ids["veh1"] = repo.save_vehicle(conn, {
         "plate_number": "أ ب ج 1234", "vehicle_type": "تريلة",
@@ -45,12 +45,12 @@ def seed(conn) -> dict:
         "default_driver_id": ids["drv2"], "notes": ""})
     ids["cb"] = repo.save_account(conn, "cashbox", {
         "name": "الخزينة الرئيسية", "created_date": f"{y}-01-01",
-        "opening_balance": 20000, "notes": ""})
+        "opening_balance": 250000, "notes": ""})
     ids["bnk"] = repo.save_account(conn, "bank", {
         "name": "بنك الراجحي — الجاري", "created_date": f"{y}-01-01",
         "account_number": "0021156688",
         "iban": "SA00 8000 0000 6080 1016 7519",
-        "opening_balance": 80000, "notes": ""})
+        "opening_balance": 400000, "notes": ""})
 
     d = (lambda m, day: f"{y}-{m:02d}-{day:02d}")
     inv1 = repo.save_invoice(conn, {
@@ -59,13 +59,13 @@ def seed(conn) -> dict:
         "trips": [
             {"vehicle_id": ids["veh1"], "driver_id": ids["drv1"],
              "from_loc": "الرياض", "to_loc": "الدمام", "price": 4500, "notes": "",
-             "expenses": [{"expense_type": "trip", "amount": 350, "notes": ""},
-                          {"expense_type": "fuel", "amount": 260, "notes": ""},
-                          {"expense_type": "card", "amount": 90, "notes": ""}]},
+             "expenses": [{"expense_type": "trip", "amount": 350, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""},
+                          {"expense_type": "fuel", "amount": 260, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""},
+                          {"expense_type": "card", "amount": 90, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""}]},
             {"vehicle_id": ids["veh2"], "driver_id": ids["drv2"],
              "from_loc": "الرياض", "to_loc": "القصيم", "price": 3000, "notes": "",
-             "expenses": [{"expense_type": "trip", "amount": 250, "notes": ""},
-                          {"expense_type": "fuel", "amount": 180, "notes": ""}]},
+             "expenses": [{"expense_type": "trip", "amount": 250, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""},
+                          {"expense_type": "fuel", "amount": 180, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""}]},
         ]})
     inv2 = repo.save_invoice(conn, {
         "date": d(3, 5), "customer_id": ids["cust2"], "notes": "",
@@ -73,8 +73,8 @@ def seed(conn) -> dict:
         "trips": [
             {"vehicle_id": ids["veh1"], "driver_id": ids["drv1"],
              "from_loc": "جدة", "to_loc": "مكة", "price": 1800, "notes": "",
-             "expenses": [{"expense_type": "trip", "amount": 150, "notes": ""},
-                          {"expense_type": "fuel", "amount": 100, "notes": ""}]},
+             "expenses": [{"expense_type": "trip", "amount": 150, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""},
+                          {"expense_type": "fuel", "amount": 100, "source": "cash", "account_kind": "cashbox", "account_id": ids["cb"], "notes": ""}]},
         ]})
     repo.save_receipt(conn, {
         "date": d(2, 25), "account_kind": "cashbox", "account_id": ids["cb"],
@@ -115,6 +115,69 @@ def seed(conn) -> dict:
         "period_month": 3, "account_kind": "cashbox", "account_id": ids["cb"],
         "base_salary": 3200, "additions": 0, "other_deductions": 150,
         "settlements": [], "notes": "خصم يومي غياب"})
+
+    # -------------------------------------------------- المورّدون والمشتريات
+    ids["sup1"] = repo.save_supplier(conn, {
+        "name": "محطة الوقود الأهلية", "phone": "0112223344",
+        "tax_number": "300012345600003", "commercial_reg": "1010234567",
+        "entity_type": "company", "tax_status": "taxable",
+        "payment_terms": 30, "opening_balance": 0, "notes": "توريد وقود أسطول"})
+    ids["sup2"] = repo.save_supplier(conn, {
+        "name": "ورشة الصيانة الحديثة", "phone": "0114445566",
+        "tax_number": "", "commercial_reg": "1010987654",
+        "entity_type": "establishment", "tax_status": "exempt",
+        "payment_terms": 0, "opening_balance": 0, "notes": ""})
+    pinv1 = repo.save_purchase_invoice(conn, {
+        "date": d(2, 18), "purchase_type": "cash", "supplier_id": ids["sup1"],
+        "expense_category": "fuel", "ref": "INV-2201", "vat_included": 0,
+        "account_kind": "cashbox", "account_id": ids["cb"],
+        "notes": "تعبئة وقود فبراير",
+        "items": [
+            {"item_name": "ديزل", "unit": "لتر", "qty": 900, "unit_price": 1.15,
+             "vat_rate": 15, "notes": ""},
+            {"item_name": "زيوت", "unit": "جالون", "qty": 12, "unit_price": 45,
+             "vat_rate": 15, "notes": ""}]})
+    pinv2 = repo.save_purchase_invoice(conn, {
+        "date": d(3, 9), "purchase_type": "credit", "supplier_id": ids["sup2"],
+        "expense_category": "spare_parts", "ref": "MNT-88", "vat_included": 1,
+        "notes": "صيانة دورية",
+        "items": [{"item_name": "قطع غيار", "unit": "قطعة", "qty": 5,
+                   "unit_price": 620, "vat_rate": 15, "notes": ""}]})
+    repo.save_payment(conn, {
+        "date": d(3, 20), "account_kind": "bank", "account_id": ids["bnk"],
+        "voucher_type": "supplier", "supplier_id": ids["sup2"],
+        "purchase_invoice_id": pinv2,
+        "amount": calc.purchase_invoice_totals(conn, pinv2)["total"],
+        "description": "سداد فاتورة الصيانة"})
+
+    # -------------------------------------------------- إشعار دائن (مرتجع نقلة)
+    # الإشعار الدائن يُصدر بمرتجع نقلة محددة — الخادم يقرأ سعر النقلة ولا يثق بمبلغ مُرسل
+    repo.save_credit_debit_note(conn, {
+        "note_type": "credit", "invoice_id": inv2, "date": d(3, 22),
+        "customer_id": ids["cust2"], "trip_ids": [trips[2]["id"]], "amount": 0,
+        "reason": "مرتجع نقلة جدة – مكة"})
+    repo.save_credit_debit_note(conn, {
+        "note_type": "debit", "invoice_id": inv2, "date": d(3, 24),
+        "customer_id": ids["cust2"], "amount": 300,
+        "reason": "رسوم انتظار إضافية"})
+
+    # -------------------------------------------------- خصومات الموظفين
+    repo.save_deduction(conn, {
+        "date": d(3, 14), "employee_id": ids["drv2"], "amount": 450,
+        "reason": "مخالفة مرورية على السيارة", "notes": ""})
+
+    # -------------------------------------------------- حزمة المنشأة الضريبية
+    repo.set_setting(conn, "company_name", "شركة النقل الحديثة")
+    repo.set_setting(conn, "company_tax_number", "310098765400003")
+    repo.set_setting(conn, "company_commercial_reg", "1010555666")
+    repo.set_setting(conn, "company_city", "الرياض")
+    repo.set_setting(conn, "company_postal_code", "12271")
+    repo.set_setting(conn, "company_building_no", "4321")
+    repo.set_setting(conn, "company_additional_no", "7654")
+    repo.set_setting(conn, "company_district", "حي الملقا")
+    repo.set_setting(conn, "company_street", "طريق الملك فهد")
+
+    ids["pinv1"], ids["pinv2"] = pinv1, pinv2
     ids["inv1"], ids["inv2"], ids["adv"] = inv1, inv2, adv
     return ids
 

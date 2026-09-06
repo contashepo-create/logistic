@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import date as _date
 
@@ -16,20 +17,54 @@ class RuleError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# تحقق التواريخ (مطابقة لـ safeIsoDate / safeFinancialYear في نسخة الويب)
+# ---------------------------------------------------------------------------
+_ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def safe_iso_date(value, label: str = "التاريخ") -> str:
+    """يتحقق أن النص تاريخ ISO حقيقي موجود فعلاً.
+
+    يرفض الصيغ الأخرى (31-12-2026) والتواريخ المستحيلة (2027-02-30).
+    تاريخ غير صالح في نطاق سنة مالية يُفسد كل مقارنات BETWEEN في التقارير
+    بصمت، لذا يُرفض عند الإدخال لا عند القراءة.
+    """
+    s = str(value if value is not None else "").strip()
+    m = _ISO_RE.match(s)
+    if not m:
+        raise RuleError(f"حقل «{label}» يجب أن يكون تاريخاً صالحاً (سنة-شهر-يوم).")
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        _date(year, month, day)
+    except ValueError:
+        raise RuleError(f"حقل «{label}» يجب أن يكون تاريخاً صالحاً (سنة-شهر-يوم).") from None
+    if year < 1900 or year > 2200:
+        raise RuleError(f"حقل «{label}» يجب أن يكون بين عامي 1900 و2200.")
+    return s
+
+
+def safe_financial_year(date_from, date_to) -> tuple[str, str, int]:
+    """يتحقق من بداية/نهاية السنة المالية ومدة السنة (180–550 يوماً).
+
+    المدة الدنيا تمنع سنوات قصيرة تُشتت الحركات، والعليا تمنع سنة تبتلع
+    سنوات أخرى فتُسبب احتساباً مزدوجاً.
+    """
+    start = safe_iso_date(date_from, "بداية السنة المالية")
+    end = safe_iso_date(date_to, "نهاية السنة المالية")
+    days = (_date.fromisoformat(end) - _date.fromisoformat(start)).days + 1
+    if days < 180 or days > 550:
+        raise RuleError(
+            "يجب أن تكون نهاية السنة المالية بعد بدايتها، "
+            "وأن تكون مدتها بين 180 و550 يوماً.")
+    return start, end, int(start[:4])
+
+
+# ---------------------------------------------------------------------------
 # قاعدة السنوات المالية
 # ---------------------------------------------------------------------------
-def open_years(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM financial_years WHERE status = 'open' ORDER BY date_from"
-    ).fetchall()
-
-
 def date_in_open_year(conn: sqlite3.Connection, date_str: str) -> bool:
     """هل التاريخ يقع داخل نطاق سنة مالية مفتوحة؟"""
-    try:
-        _date.fromisoformat(date_str)
-    except (TypeError, ValueError):
-        raise RuleError("تاريخ غير صالح، يجب أن يكون بصيغة سنة-شهر-يوم.")
+    safe_iso_date(date_str, "تاريخ الحركة")
     row = conn.execute(
         "SELECT COUNT(*) AS c FROM financial_years "
         "WHERE status = 'open' AND date_from <= ? AND date_to >= ?",
@@ -58,12 +93,6 @@ def ensure_movement_editable(conn: sqlite3.Connection, old_date: str,
         )
     if new_date is not None and new_date != old_date:
         ensure_date_in_open_year(conn, new_date)
-
-
-def has_open_year(conn: sqlite3.Connection) -> bool:
-    return conn.execute(
-        "SELECT COUNT(*) AS c FROM financial_years WHERE status='open'"
-    ).fetchone()["c"] > 0
 
 
 # ---------------------------------------------------------------------------

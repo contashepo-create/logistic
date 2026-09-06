@@ -25,15 +25,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["LOGISTIC_DATA_DIR"] = tempfile.mkdtemp(prefix="logistic_uiaudit_")
 os.environ["LOGISTIC_HEADLESS"] = "1"
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QLineEdit,
-    QMessageBox, QPushButton, QTabWidget,
+    QApplication, QDialog, QFileDialog, QMessageBox, QPushButton,
 )
 
 PASS = FAIL = 0
 FAILURES: list[str] = []
-
 
 def check(name: str, cond: bool, extra: str = "") -> None:
     global PASS, FAIL
@@ -44,10 +42,8 @@ def check(name: str, cond: bool, extra: str = "") -> None:
         FAILURES.append(f"{name} {extra}")
         print(f"  ❌ {name} {extra}")
 
-
 def step(t: str) -> None:
     print(f"== {t}", flush=True)
-
 
 app = QApplication(sys.argv)
 app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
@@ -60,25 +56,21 @@ def _no(*a, **k):
 for fn in ("information", "warning", "critical", "about", "question"):
     setattr(QMessageBox, fn, staticmethod(_no))
 
-
 def _nb_exec(self):
     self.show()
     app.processEvents()
     self.close()
     return QDialog.DialogCode.Accepted
 
-
 QDialog.exec = _nb_exec
 EXPORT_DIR = Path(tempfile.mkdtemp(prefix="uiaudit_out_"))
 EXPORTED: list[Path] = []
 from app.utils import exporter
 
-
 def _fake_path(parent, default_name, filters):
     out = EXPORT_DIR / f"{len(EXPORTED):03d}_{default_name}"
     EXPORTED.append(out)
     return str(out)
-
 
 exporter._ask_save_path = _fake_path
 exporter._ask_overwrite = lambda p, x: True
@@ -115,14 +107,14 @@ d.trips.append({"vehicle_id": ids["veh1"], "driver_id": ids["drv1"],
                 "notes": "", "expenses": []})
 d.refresh(); app.processEvents()
 check("سطر النقلة ظهر", d.trips_table.rowCount() == 1)
-t1 = d.totals._values["إجمالي قيمة النقلات"].text()
+t1 = d.totals._values["قيمة النقلات"].text()
 check("إجمالي النقلات الحي = 2,500.00", t1 == "2,500.00", f"({t1})")
 
 from app.ui.dialogs_ops import TripExpensesDialog, ExpenseDialog
 d.trips[0]["expenses"] = [{"expense_type": "fuel", "amount": 200, "notes": ""},
                           {"expense_type": "trip", "amount": 120, "notes": ""}]
 d.refresh(); app.processEvents()
-t2 = d.totals._values["إجمالي المصروفات المباشرة"].text()
+t2 = d.totals._values["التكلفة المباشرة"].text()
 t3 = d.totals._values["الربح المتوقع"].text()
 check("المصروفات الحية = 320.00", t2 == "320.00", f"({t2})")
 check("الربح المتوقع الحي = 2,180.00", t3 == "2,180.00", f"({t3})")
@@ -130,7 +122,7 @@ check("الربح المتوقع الحي = 2,180.00", t3 == "2,180.00", f"({t3}
 # حذف النقلة عبر مسار الزر (remove_trip)
 d.remove_trip(0)
 check("حذف النقلة من الواجهة", d.trips_table.rowCount() == 0
-      and d.totals._values["إجمالي قيمة النقلات"].text() == "0.00")
+      and d.totals._values["قيمة النقلات"].text() == "0.00")
 
 # نافذة مصروفات النقلة: إضافة/تعديل/حذف
 trip = {"from_loc": "أ", "to_loc": "ب", "price": 100, "expenses": []}
@@ -138,17 +130,17 @@ exd = TripExpensesDialog(trip)
 exd.show(); app.processEvents()
 exp_dlg = ExpenseDialog(exd)
 exp_dlg.type_combo.setCurrentIndex(exp_dlg.type_combo.findData("card"))
-exp_dlg.amount_edit.setText("75.50")
+exp_dlg.unit_edit.setText("75.50")
 exp_dlg.notes_edit.setText("كارتة فحص")
 trip["expenses"].append(exp_dlg.data())
 exd.refresh()
 check("مصروف أُضيف عبر النافذة", exd.table.rowCount() == 1
-      and exd.table.item(0, 1).text() == "75.50")
+      and exd.table.item(0, 3).text() == "75.50")  # عمود «الإجمالي»
 exp_dlg2 = ExpenseDialog(exd, trip["expenses"][0])
-exp_dlg2.amount_edit.setText("80")
+exp_dlg2.unit_edit.setText("80")
 trip["expenses"][0].update(exp_dlg2.data())
 exd.refresh()
-check("تعديل المصروف عبر النافذة", exd.table.item(0, 1).text() == "80.00")
+check("تعديل المصروف عبر النافذة", exd.table.item(0, 3).text() == "80.00")
 exd.del_expense(0)
 check("حذف المصروف عبر النافذة", exd.table.rowCount() == 0)
 exd.close()
@@ -178,11 +170,12 @@ from app.ui.dialogs_ops import PaymentDialog
 
 pd = PaymentDialog()
 pd.show(); app.processEvents()
-for i, vt in enumerate(("trip", "advance", "vehicle", "general")):
+# ترتيب الصفحات يتبع PAYMENT_TYPES — يُقارن بالصفحة نفسها لا بفهرس ثابت
+for vt in ("trip", "advance", "vehicle", "supplier", "purchase", "owner", "general"):
     pd.type_combo.setCurrentIndex(pd.type_combo.findData(vt))
     app.processEvents()
     check(f"تبديل النوع إلى {vt} يبدّل المكدس",
-          pd.stack_lay.currentIndex() == i)
+          pd.stack_lay.currentWidget() is pd._pages[vt])
 pd.close()
 
 pd = PaymentDialog()
@@ -190,7 +183,7 @@ pd.date_edit.set_iso("2026-06-05")
 pd.account_combo.select("cashbox", ids["cb"])
 idx = pd.type_combo.findData("general")
 pd.type_combo.setCurrentIndex(idx)
-pd.amount_edit.setText("250")
+pd.unit_edit.setText("250")
 pd.desc_edit.setText("ي" * 6000)  # سقف النص
 try:
     pd.save()
@@ -330,12 +323,27 @@ check("تقرير الرحلات بدون فلترة عميل = كل الرحل�
 # ===========================================================================
 step("6) الإعدادات: الترويسة تتغير + نسخة احتياطية قابلة للقراءة")
 set_page = pages["الإعدادات"]
+# عنوان الشركة إلزامي (≥5 محارف ونص معقول) كما في نسخة الويب
+set_page.address_edit.setText("الرياض، حي الملقا، شارع الملك عبدالعزيز")
 set_page.name_edit.setText("شركة الفحص الشامل <للنقل>")
 set_page.save()
 conn2 = db.get_conn()
+# الوسوم تُنزع عند الحفظ (تعقيم المدخلات) فلا تصل للترويسة أصلاً
+saved_name = repo.get_setting(conn2, "company_name", "")
+check("وسوم HTML تُنزع من اسم الشركة عند الحفظ",
+      "<" not in saved_name and "شركة الفحص الشامل" in saved_name,
+      f"({saved_name!r})")
 html = exporter.build_report_html(conn2, title="فحص", headers=["أ"], rows=[["ب"]])
-check("اسم الشركة الجديد يظهر في الترويسة مهرباً",
-      "شركة الفحص الشامل &lt;للنقل&gt;" in html)
+check("اسم الشركة الجديد يظهر في الترويسة", saved_name in html)
+# التهريب يبقى طبقة دفاع ثانية لو وصلت وسوم بأي طريق
+conn2.execute("UPDATE settings SET value=? WHERE key='company_name'",
+              ("<img src=x onerror=alert(1)>",))
+conn2.commit()
+html2 = exporter.build_report_html(conn2, title="فحص", headers=["أ"], rows=[["ب"]])
+check("الوسم الخبيث يُهرَّب في الترويسة لا يُنفَّذ",
+      "<img" not in html2 and "&lt;img" in html2)
+conn2.execute("UPDATE settings SET value=? WHERE key='company_name'", (saved_name,))
+conn2.commit()
 # النقر على زر النسخة الاحتياطية فعلياً
 backup_btn = next((b for b in set_page.findChildren(QPushButton)
                    if "احتياطية" in b.text()), None)
@@ -373,7 +381,6 @@ check("قيمة سالبة في بطاقة الإجماليات تعمل", "1,23
 inv_page = pages["فواتير النقل"]
 inv_page.refresh()
 if inv_page.table.rowCount():
-    from PySide6.QtCore import QModelIndex
     inv_page.table.doubleClicked.emit(inv_page.table.model().index(0, 0))
     app.processEvents()
     check("نقرة مزدوجة تفتح العرض بلا تعليق", True)

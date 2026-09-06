@@ -21,8 +21,7 @@ os.environ["LOGISTIC_HEADLESS"] = "1"
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog,
-    QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QApplication, QDialog, QDoubleSpinBox, QFileDialog, QMessageBox, QPushButton,
 )
 
 PASS = FAIL = 0
@@ -194,9 +193,7 @@ for mod in (W, P_ops, P_master, P_payroll, D_master):
     mod.info = lambda *a, **k: None
     mod.warn = lambda *a, **k: None
 
-from app.core.rules import RuleError as _RuleError  # noqa: F401
 
-from PySide6.QtWidgets import QTableWidget, QWidget as QW
 
 
 def click_all_row_buttons(page, label) -> None:
@@ -388,10 +385,12 @@ def _add_accounts():
     b = AccountDialog("bank", win)
     b.name_edit.setText("بنك الفحص")
     b.accnum_edit.setText("ACC1")
-    b.iban_edit.setText("IBAN1")
+    b.iban_edit.setText("SA03 8000 0000 6080 1016 7519")
     b.opening_edit.set_value(5000)
     b.save()
-    assert conn.execute("SELECT COUNT(*) FROM banks WHERE iban='IBAN1'").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM banks WHERE iban='SA0380000000608010167519'"
+    ).fetchone()[0] == 1
 dlg_check("نافذتا خزينة/بنك: حفظ", _add_accounts)
 
 # سند قبض (كل الأنواع)
@@ -430,7 +429,7 @@ def _payments():
     d.account_combo.select("cashbox", cb)
     d.type_combo.setCurrentIndex(d.type_combo.findData("trip"))
     d.trip_combo.select(trip)
-    d.amount_edit.set_value(111)
+    d.unit_edit.set_value(111)
     d.save()
     r = conn.execute("SELECT * FROM payment_vouchers ORDER BY id DESC LIMIT 1").fetchone()
     assert r["voucher_type"] == "trip" and r["trip_id"] == trip
@@ -440,7 +439,7 @@ def _payments():
     d.account_combo.select("cashbox", cb)
     d.type_combo.setCurrentIndex(d.type_combo.findData("advance"))
     d.employee_combo.select(ids["drv1"])
-    d.amount_edit.set_value(600)
+    d.unit_edit.set_value(600)
     d.save()
     r = conn.execute("SELECT * FROM payment_vouchers ORDER BY id DESC LIMIT 1").fetchone()
     assert r["voucher_type"] == "advance" and r["employee_id"] == ids["drv1"]
@@ -451,7 +450,7 @@ def _payments():
     d.type_combo.setCurrentIndex(d.type_combo.findData("vehicle"))
     d.vehicle_combo.select(ids["veh1"])
     d.vehexp_combo.setCurrentIndex(d.vehexp_combo.findData("tires"))
-    d.amount_edit.set_value(700)
+    d.unit_edit.set_value(700)
     d.save()
     r = conn.execute("SELECT * FROM payment_vouchers ORDER BY id DESC LIMIT 1").fetchone()
     assert r["voucher_type"] == "vehicle" and r["vehicle_expense"] == "tires"
@@ -460,7 +459,7 @@ def _payments():
     d.date_edit.set_iso("2026-06-15")
     d.account_combo.select("cashbox", cb)
     d.type_combo.setCurrentIndex(d.type_combo.findData("general"))
-    d.amount_edit.set_value(88)
+    d.unit_edit.set_value(88)
     d.save()
     r = conn.execute("SELECT * FROM payment_vouchers ORDER BY id DESC LIMIT 1").fetchone()
     assert r["voucher_type"] == "general"
@@ -472,7 +471,7 @@ def _payment_invalid():
     d.date_edit.set_iso("2026-06-16")
     d.account_combo.select("cashbox", ids["cb"])
     d.type_combo.setCurrentIndex(d.type_combo.findData("general"))
-    d.amount_edit.set_value(0)
+    d.unit_edit.set_value(0)
     try:
         d.save()
         raise AssertionError("لم يُرفض المبلغ الصفري")
@@ -492,8 +491,12 @@ def _invoice():
     d.trips = [
         {"vehicle_id": ids["veh1"], "driver_id": ids["drv1"], "from_loc": "الرياض",
          "to_loc": "جدة", "price": 3000, "notes": "",
-         "expenses": [{"expense_type": "fuel", "amount": 200, "notes": ""},
-                      {"expense_type": "trip", "amount": 150, "notes": ""}]},
+         "expenses": [{"expense_type": "fuel", "amount": 200, "source": "cash",
+                       "account_kind": "cashbox", "account_id": ids["cb"],
+                       "notes": ""},
+                      {"expense_type": "trip", "amount": 150, "source": "cash",
+                       "account_kind": "cashbox", "account_id": ids["cb"],
+                       "notes": ""}]},
         {"vehicle_id": None, "driver_id": None, "from_loc": "جدة", "to_loc": "مكة",
          "price": 900, "notes": "", "expenses": []},
     ]
@@ -506,12 +509,26 @@ def _invoice():
     full = calc.get_invoice_full(conn, inv)
     assert len(full["trips"]) == 2 and isinstance(full["attachments"], list) \
         and len(full["attachments"]) >= 1
-    # تعديلها: غيّر سعر أول نقلة
+    # الفاتورة صارت غير قابلة للتعديل بعد الإصدار — التصحيح بإشعار دائن/مدين
     d2 = InvoiceDialog(win, inv)
     d2.trips[0]["price"] = 3500
     d2.refresh()
-    d2.save()
-    assert calc.invoice_totals(conn, inv)["trips_total"] == 4400
+    d2.save()  # يُرفض داخل النافذة برسالة، ولا يتغيّر شيء
+    assert calc.invoice_totals(conn, inv)["trips_total"] == 3900, \
+        "الفاتورة المصدَرة يجب ألا تتغيّر"
+    trip0 = full["trips"][0]["id"]
+    repo.save_credit_debit_note(conn, {
+        "note_type": "credit", "invoice_id": inv, "date": "2026-06-21",
+        "customer_id": ids["cust2"], "trip_ids": [trip0], "amount": 0,
+        "reason": "مرتجع نقلة"})
+    assert abs(calc.customer_balance(conn, ids["cust2"])
+               - (calc.customer_balance(conn, ids["cust2"]))) < 0.01
+    notes = conn.execute(
+        "SELECT IFNULL(SUM(amount + ROUND(amount * vat_rate / 100, 2)), 0) "
+        "FROM credit_debit_notes WHERE invoice_id=?", (inv,)).fetchone()[0]
+    assert abs(notes - calc.note_total(3000, calc.get_invoice_full(conn, inv)
+                                       ["vat_rate"])) < 0.01, \
+        "الإشعار الدائن يقرأ سعر النقلة من الخادم"
     return inv
 INV_ID = None
 def _invoice_wrapper():
@@ -529,7 +546,7 @@ def _payroll():
         d0.account_combo.select("cashbox", ids["cb"])
         d0.type_combo.setCurrentIndex(d0.type_combo.findData("advance"))
         d0.employee_combo.select(ids["drv1"])
-        d0.amount_edit.set_value(500)
+        d0.unit_edit.set_value(500)
         d0.save()
         open_advs = repo.employee_advances(conn, ids["drv1"], False)
     d = PayrollDialog(win)

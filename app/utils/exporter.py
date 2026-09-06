@@ -15,7 +15,7 @@ from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageLayout
 from PySide6.QtGui import QFont, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
-from PySide6.QtWidgets import (QApplication, QFileDialog, QMessageBox, QWidget)
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from ..core import repo
 
@@ -38,6 +38,74 @@ def company_header_html(conn: sqlite3.Connection) -> str:
     if contact:
         parts.append(contact)
     return "<br>".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# إعدادات الطباعة — مطابقة لـ PrintSettings/paperDimensions في نسخة الويب
+# ---------------------------------------------------------------------------
+PAPER_SIZES: dict[str, tuple[float, float]] = {
+    "A4": (210.0, 297.0), "A5": (148.0, 210.0), "Letter": (216.0, 279.0),
+}
+ORIENTATIONS = ("portrait", "landscape")
+_PAPER_IDS = {"A4": QPageSize.PageSizeId.A4, "A5": QPageSize.PageSizeId.A5,
+              "Letter": QPageSize.PageSizeId.Letter}
+
+
+def print_settings(conn) -> dict:
+    """إعدادات الطباعة المحفوظة، بقيم افتراضية آمنة."""
+    paper = repo.get_setting(conn, "print_paper", "A4")
+    if paper not in PAPER_SIZES:
+        paper = "A4"
+    orientation = repo.get_setting(conn, "print_orientation", "portrait")
+    if orientation not in ORIENTATIONS:
+        orientation = "portrait"
+    try:
+        margin = max(0.0, min(50.0, float(repo.get_setting(conn, "print_margin_mm", "12"))))
+    except (TypeError, ValueError):
+        margin = 12.0
+    try:
+        font_pt = max(6.0, min(24.0, float(repo.get_setting(conn, "print_font_size_pt", "10"))))
+    except (TypeError, ValueError):
+        font_pt = 10.0
+    accent = repo.get_setting(conn, "print_accent_color", "#1f4e79").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
+        accent = "#1f4e79"
+    return {"paper": paper, "orientation": orientation, "margin_mm": margin,
+            "font_size_pt": font_pt, "accent_color": accent}
+
+
+def paper_dimensions(settings: dict) -> tuple[float, float]:
+    """أبعاد الورقة بالمليمتر مع مراعاة الاتجاه (مطابق لـ paperDimensions)."""
+    w, h = PAPER_SIZES.get(settings.get("paper", "A4"), PAPER_SIZES["A4"])
+    return (h, w) if settings.get("orientation") == "landscape" else (w, h)
+
+
+def apply_printer_settings(printer: "QPrinter", conn) -> None:
+    """تطبيق إعدادات الطباعة على كائن الطابعة."""
+    settings = print_settings(conn)
+    printer.setPageSize(QPageSize(_PAPER_IDS.get(settings["paper"],
+                                                 QPageSize.PageSizeId.A4)))
+    if settings["orientation"] == "landscape":
+        printer.setPageOrientation(QPageLayout.Orientation.Landscape)
+    else:
+        printer.setPageOrientation(QPageLayout.Orientation.Portrait)
+    m = settings["margin_mm"]
+    printer.setPageMargins(QMarginsF(m, m, m, m), QPageLayout.Unit.Millimeter)
+
+
+def report_css(conn) -> str:
+    """CSS مشترك للتقارير يعكس حجم الخط ولون الهوية المحفوظين."""
+    st = print_settings(conn)
+    fs = st["font_size_pt"]
+    accent = st["accent_color"]
+    return (
+        f"<style>body{{font-family:'Segoe UI','Tahoma',sans-serif;"
+        f"font-size:{fs:.1f}pt;direction:rtl;}}"
+        f"table{{border-collapse:collapse;}}"
+        f"th{{background:{accent};color:#fff;padding:4px 6px;"
+        f"font-size:{fs:.1f}pt;}}"
+        f"td{{padding:3px 6px;font-size:{fs:.1f}pt;}}"
+        f"h1,h2{{color:{accent};}}</style>")
 
 
 def build_table_html(headers: list[str], rows: list[list],
@@ -70,7 +138,8 @@ def build_report_html(conn: sqlite3.Connection, title: str, subtitle: str = "",
                       center_from: int | None = None,
                       footer_note: str = "") -> str:
     """تقرير احترافي: ترويسة الشركة + عنوان + جدول + ملخصات + تذييل."""
-    body = [f"<div align='center'>{company_header_html(conn)}</div><hr>"]
+    body = [report_css(conn),
+            f"<div align='center'>{company_header_html(conn)}</div><hr>"]
     body.append(f"<div align='center' style='font-size:14pt'><b>{_esc(title)}</b></div>")
     if subtitle:
         body.append(f"<div align='center'>{_esc(subtitle)}</div><br>")
@@ -142,6 +211,7 @@ def export_excel(parent: QWidget, conn: sqlite3.Connection, title: str,
     if not path.lower().endswith(".xlsx"):
         path += ".xlsx"
     try:
+        from ..core.security import neutralize_formula
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
@@ -191,7 +261,8 @@ def export_excel(parent: QWidget, conn: sqlite3.Connection, title: str,
                     cell.value = float(s.replace(",", ""))
                     cell.number_format = "#,##0.00"
                 else:
-                    cell.value = s
+                    # تحييد حقن صيغ Excel: اسم يبدأ بـ = أو + أو @ يُنفَّذ عند الفتح
+                    cell.value = neutralize_formula(s)
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             r += 1
@@ -230,6 +301,11 @@ def _pdf_to_file(html: str, path: str, printer: QPrinter | None = None) -> None:
     if pr is None:
         pr = QPrinter(QPrinter.PrinterMode.HighResolution)
         pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        from ..core import db as _db
+        try:
+            apply_printer_settings(pr, _db.get_conn())
+        except Exception:  # noqa: BLE001
+            pr.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         pr.setOutputFileName(path)
         pr.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
     pr.setPageMargins(QMarginsF(12, 12, 12, 14), QPageLayout.Unit.Millimeter)
@@ -269,7 +345,11 @@ def print_html(parent: QWidget, html: str) -> None:
         _pdf_to_file(html, path)
         return
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    from ..core import db as _db
+    try:
+        apply_printer_settings(printer, _db.get_conn())
+    except Exception:  # noqa: BLE001
+        printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
     dlg = QPrintDialog(printer, parent)
     dlg.setWindowTitle("طباعة")
     if dlg.exec() == QDialog.DialogCode.Accepted:
