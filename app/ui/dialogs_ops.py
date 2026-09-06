@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import calc, db, repo, tax
+from ..core import calc, db, features, repo, tax
 from ..core.rules import RuleError
 from ..utils import exporter, fmt
 from ..utils.fmt import (
@@ -598,7 +598,10 @@ def customer_invoice_html(conn, invoice_id: int) -> str:
     info = repo.company_info(conn)
     cur = info.get("currency", "")
     customer = d.get("customer") or {}
-    inv_type = tax.zatca_invoice_type(customer)
+    # ميزة «الفاتورة الضريبية» معطّلة افتراضياً ولا تُفعَّل إلا بقرار المالك
+    # (من بوت التليجرام أو صفحة الإعدادات) — مطابق لـ hasFeature في الويب.
+    tax_enabled = features.has_feature(conn, "tax_invoice")
+    inv_type = (tax.zatca_invoice_type(customer) if tax_enabled else "simplified")
     type_label = tax.ZATCA_TYPE_LABEL[inv_type]
 
     rows_html = []
@@ -709,12 +712,16 @@ def customer_invoice_html(conn, invoice_id: int) -> str:
     if d.get("notes"):
         parts.append(f"<div align='right' style='font-size:10pt'><b>ملاحظات:</b> "
                      f"{exporter._esc(d['notes'])}</div>")
-    qr = _zatca_qr_img_html(conn, d)
+    # رمز زاتكا جزء من ميزة الفاتورة الضريبية — لا يُطبع وهي معطّلة
+    qr = _zatca_qr_img_html(conn, d) if tax_enabled else ""
     if qr:
         parts.append(
             "<table dir='rtl' width='100%'><tr>"
             f"<td align='right' style='font-size:9pt'>رمز الاستجابة السريعة (ZATCA)<br>{qr}</td>"
             "</tr></table>")
+    if not tax_enabled and float(d.get("vat_amount") or 0) > 0:
+        parts.append(f"<br><div align='center' style='font-size:8.5pt;color:#92400e'>"
+                     f"{exporter._esc(features.TAX_INVOICE_WARNING)}</div>")
     note = repo.get_setting(conn, "vat_note", "")
     if note:
         parts.append(f"<br><div align='center' style='font-size:9.5pt'>"
