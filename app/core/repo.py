@@ -21,8 +21,8 @@ from .rules import (
     ensure_positive, ensure_not_blank, safe_financial_year
 )
 from .security import (
-    is_plausible_identity_text, safe_account_number, safe_email, safe_iban,
-    safe_phone, safe_text,
+    is_plausible_identity_text, safe_account_number, safe_address,
+    safe_company_name, safe_email, safe_iban, safe_phone, safe_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -81,8 +81,11 @@ def save_company_settings(conn, values: dict) -> None:
             cleaned[key] = f"{rate:g}"
             continue
         text = safe_text(value, key, limit)
-        if key == "company_name" and text and not is_plausible_identity_text(text):
-            raise RuleError("اسم الشركة غير صحيح أو وهمي.")
+        if key == "company_name":
+            text = safe_company_name(text)
+        if key == "company_address":
+            # العنوان يُطبع على كل فاتورة — لا يقبل قيمة فارغة أو وهمية
+            text = safe_address(text, "عنوان الشركة")
         if key == "company_phone" and text:
             text = safe_phone(text, label="هاتف الشركة")
         if key == "company_email" and text:

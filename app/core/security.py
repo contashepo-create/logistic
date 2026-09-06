@@ -210,3 +210,21 @@ def safe_iban(value) -> str:
     if s and not IBAN_RE.match(s):
         raise RuleError("صيغة الآيبان غير صحيحة (حرفا دولة + رقمان ثم 11–30 حرفاً أو رقماً).")
     return s
+
+
+def safe_address(value, label: str = "العنوان", required: bool = True) -> str:
+    """عنوان حقيقي وكامل (مطابق لـ safeAddress في نسخة الويب)."""
+    text = safe_field(value, label, max_len=300, min_len=5, required=required)
+    if not text:
+        return text
+    if not is_plausible_identity_text(text) or len("".join(text.split())) < 5:
+        raise RuleError(f"أدخل قيمة حقيقية وكاملة في حقل «{label}».")
+    return text
+
+
+def safe_company_name(value) -> str:
+    """اسم شركة حقيقي (مطابق لـ safeCompanyName في نسخة الويب)."""
+    text = safe_field(value, "اسم الشركة", max_len=120, min_len=2, required=True)
+    if not is_plausible_identity_text(text):
+        raise RuleError("أدخل اسماً حقيقياً وصحيحاً للشركة.")
+    return text
